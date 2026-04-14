@@ -1,0 +1,17 @@
+.DS_Store
+.coverage
+.idea/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+build/
+dist/
+release/
+vendor/tesseract_runtime/*
+!vendor/tesseract_runtime/README.md
+*.egg-info/
+*.pyc
+*.pyo
+*.spec

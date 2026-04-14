@@ -1,0 +1,81 @@
+{
+  "name": "open-anonymizer-starter-pdf-corpus",
+  "cases": [
+    {
+      "id": "native-simple",
+      "category": "native_text",
+      "description": "Single-page text PDF should extract directly.",
+      "fixture": {
+        "kind": "text",
+        "text": "Bonjour clinique"
+      },
+      "expected_text": "Bonjour clinique"
+    },
+    {
+      "id": "positioned-words-spacing",
+      "category": "spacing",
+      "description": "Positioned words should preserve a space between tokens.",
+      "fixture": {
+        "kind": "positioned_words",
+        "words": [
+          [
+            "Bonjour",
+            72,
+            720
+          ],
+          [
+            "clinique",
+            140,
+            720
+          ]
+        ]
+      },
+      "expected_text": "Bonjour clinique"
+    },
+    {
+      "id": "tj-array-spacing",
+      "category": "spacing",
+      "description": "TJ spacing should normalize to a single space.",
+      "fixture": {
+        "kind": "raw_stream",
+        "stream": "BT\n/F1 18 Tf\n72 720 Td\n[(Bonjour) 1200 (clinique)] TJ\nET\n"
+      },
+      "expected_text": "Bonjour clinique"
+    },
+    {
+      "id": "multi-page-native",
+      "category": "multipage",
+      "description": "Multi-page PDFs should keep page boundaries.",
+      "fixture": {
+        "kind": "text_pages",
+        "pages": [
+          "Bonjour clinique",
+          "Deuxieme page"
+        ]
+      },
+      "expected_text": "Bonjour clinique\n\nDeuxieme page"
+    },
+    {
+      "id": "text-plus-blank-page",
+      "category": "blank_pages",
+      "description": "Blank pages should be ignored when other pages contain text.",
+      "fixture": {
+        "kind": "raw_pages",
+        "streams": [
+          "BT\n/F1 18 Tf\n72 720 Td\n(Bonjour clinique) Tj\nET\n",
+          ""
+        ]
+      },
+      "expected_text": "Bonjour clinique"
+    },
+    {
+      "id": "blank-document",
+      "category": "blank_pages",
+      "description": "Completely blank PDFs should still error.",
+      "fixture": {
+        "kind": "blank"
+      },
+      "expected_error_contains": "does not contain readable text"
+    }
+  ]
+}
