@@ -3,8 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 
 _APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
@@ -35,8 +36,16 @@ def _asset_path(filename: str) -> Path:
     return candidates[0]
 
 
+def _source_application_icon() -> QIcon:
+    return QIcon(str(_asset_path("fingerprint.png")))
+
+
+def _header_icon_path() -> Path:
+    return _asset_path("white_fingerprint.svg")
+
+
 def application_icon() -> QIcon:
-    source_icon = QIcon(str(_asset_path("fingerprint.png")))
+    source_icon = _source_application_icon()
     if source_icon.isNull():
         return QIcon()
 
@@ -47,6 +56,23 @@ def application_icon() -> QIcon:
             icon.addPixmap(pixmap)
 
     return icon if not icon.isNull() else source_icon
+
+
+def application_header_icon(size: QSize) -> QPixmap:
+    target_size = QSize(max(1, size.width()), max(1, size.height()))
+
+    renderer = QSvgRenderer(str(_header_icon_path()))
+    if renderer.isValid():
+        rendered_pixmap = QPixmap(target_size)
+        rendered_pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(rendered_pixmap)
+        renderer.render(painter)
+        painter.end()
+        return rendered_pixmap
+
+    source_icon = _source_application_icon()
+    return source_icon.pixmap(target_size)
 
 
 def bug_report_icon() -> QIcon:

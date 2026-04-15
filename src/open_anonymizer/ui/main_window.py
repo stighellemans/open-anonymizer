@@ -31,7 +31,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from open_anonymizer.branding import application_icon, bug_report_icon
+from open_anonymizer.branding import (
+    application_header_icon,
+    application_icon,
+    bug_report_icon,
+)
 from open_anonymizer.models import (
     AnonymizationSettings,
     ExportMode,
@@ -590,7 +594,7 @@ class MainWindow(QMainWindow):
         )
         self.header_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.header_icon_label.setPixmap(
-            self.windowIcon().pixmap(
+            application_header_icon(
                 QSize(
                     layout_profile.header_icon_pixmap_size,
                     layout_profile.header_icon_pixmap_size,

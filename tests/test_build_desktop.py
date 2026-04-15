@@ -114,4 +114,4 @@ def test_runtime_source_only_imports_expected_qt_modules() -> None:
                 continue
             imported_qt_modules.add(node.module.removeprefix("PySide6."))
 
-    assert imported_qt_modules == {"QtCore", "QtGui", "QtWidgets"}
+    assert imported_qt_modules == {"QtCore", "QtGui", "QtSvg", "QtWidgets"}

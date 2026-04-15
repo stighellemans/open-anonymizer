@@ -31,6 +31,20 @@ def _wait_for_document_import(window: MainWindow, qtbot, document: ImportedDocum
     )
 
 
+def _average_nontransparent_lightness(image) -> float:
+    total = 0
+    count = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if color.alpha() == 0:
+                continue
+            total += max(color.red(), color.green(), color.blue())
+            count += 1
+
+    return total / count if count else 0.0
+
+
 def test_main_window_keeps_pasted_text_out_of_imported_file_list(
     tmp_path: Path,
     qtbot,
@@ -64,6 +78,21 @@ def test_main_window_shows_application_branding_icon(qtbot) -> None:
     assert header_icon is not None
     assert window.windowIcon().isNull() is False
     assert header_icon.pixmap().isNull() is False
+
+
+def test_main_window_uses_white_header_icon_variant(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    header_icon = window.findChild(QLabel, "headerIcon")
+
+    assert header_icon is not None
+
+    header_pixmap = header_icon.pixmap()
+    window_pixmap = window.windowIcon().pixmap(header_pixmap.size())
+
+    assert _average_nontransparent_lightness(header_pixmap.toImage()) > 240
+    assert _average_nontransparent_lightness(window_pixmap.toImage()) < 80
 
 
 def test_recommended_window_size_stays_within_available_screen() -> None:

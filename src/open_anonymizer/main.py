@@ -118,8 +118,8 @@ QLabel#windowSubtitle {
     margin-bottom: 2px;
 }
 QLabel#headerIcon {
-    background: #fffdf9;
-    border: 1px solid #d6d0c8;
+    background: #1f4d45;
+    border: 1px solid #163b35;
     border-radius: 18px;
     padding: 10px;
 }
