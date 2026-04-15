@@ -19,6 +19,7 @@ APP_ID = "com.openanonymizer.app"
 APP_NAME = "Open Anonymizer"
 APP_PUBLISHER = "Stig Hellemans"
 APP_EXECUTABLE_NAME = "OpenAnonymizer.exe"
+DEFAULT_INSTALLER_ICON_PATH = REPO_ROOT / "build" / "OpenAnonymizer.ico"
 
 
 def _escape_inno_value(value: str) -> str:
@@ -63,6 +64,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional path to ISCC.exe. If omitted, common install locations and PATH are searched.",
     )
+    parser.add_argument(
+        "--setup-icon-file",
+        type=Path,
+        default=DEFAULT_INSTALLER_ICON_PATH,
+        help="Optional .ico file to embed into the generated setup.exe.",
+    )
     return parser
 
 
@@ -72,7 +79,13 @@ def build_installer_script(
     output_dir: Path,
     output_base_filename: str,
     license_file: Path,
+    setup_icon_file: Path | None = None,
 ) -> str:
+    setup_icon_line = (
+        f"SetupIconFile={_inno_path(setup_icon_file)}"
+        if setup_icon_file is not None
+        else ""
+    )
     return dedent(
         f"""
         [Setup]
@@ -85,6 +98,7 @@ def build_installer_script(
         DisableProgramGroupPage=yes
         LicenseFile={_inno_path(license_file)}
         UninstallDisplayIcon={{app}}\\{APP_EXECUTABLE_NAME}
+        {setup_icon_line}
         Compression=lzma
         SolidCompression=yes
         WizardStyle=modern
@@ -153,6 +167,7 @@ def main() -> int:
     output_dir = args.output_dir.resolve()
     script_path = args.script_path.resolve()
     license_file = (REPO_ROOT / "LICENSE").resolve()
+    setup_icon_file = args.setup_icon_file.resolve() if args.setup_icon_file else None
 
     if not dist_dir.exists():
         raise FileNotFoundError(f"Distribution directory does not exist: {dist_dir}")
@@ -172,6 +187,7 @@ def main() -> int:
             output_dir=output_dir,
             output_base_filename=args.output_base_filename,
             license_file=license_file,
+            setup_icon_file=setup_icon_file if setup_icon_file and setup_icon_file.exists() else None,
         ),
         encoding="utf-8",
     )

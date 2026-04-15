@@ -2,6 +2,8 @@ from datetime import date
 from pathlib import Path
 import re
 
+import pytest
+
 from open_anonymizer.models import AnonymizationSettings, ImportedDocument, PdfPage
 from open_anonymizer.services.deduce_backend import (
     BackendAnalysisResult,
@@ -276,7 +278,19 @@ def test_deidentify_document_smart_mode_uses_explicit_date_shift_days(monkeypatc
     assert SMART_DATE_SHIFT_WARNING not in result.warnings
 
 
-def test_deidentify_document_smart_mode_treats_institutions_like_hospitals(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "institution",
+        "healthcare_institution",
+        "healthcare institution",
+        "zorginstelling",
+    ],
+)
+def test_deidentify_document_smart_mode_treats_institutions_like_hospitals(
+    monkeypatch,
+    tag: str,
+) -> None:
     text = "Consultatie in UZ Leuven."
     institution_text = "UZ Leuven"
 
@@ -322,7 +336,7 @@ def test_deidentify_document_smart_mode_treats_institutions_like_hospitals(monke
 
     monkeypatch.setattr(
         "open_anonymizer.services.smart_pseudonymizer.analyze_text",
-        fake_analyze_text_with_tag("institution"),
+        fake_analyze_text_with_tag(tag),
     )
     institution_result = deidentify_document(document, settings)
 

@@ -41,6 +41,7 @@ PLACEHOLDER_TAG_NAMES = {
     "hospital": "HOSPITAL",
     "ziekenhuis": "HOSPITAL",
     "institution": "INSTITUTION",
+    "healthcare_institution": "INSTITUTION",
     "zorginstelling": "INSTITUTION",
     "age": "AGE",
     "leeftijd": "AGE",
@@ -460,7 +461,12 @@ def deidentify_text(text: str, settings: AnonymizationSettings) -> str:
 
 
 def placeholder_tag_name(tag: str) -> str:
-    return PLACEHOLDER_TAG_NAMES.get(tag, tag.upper())
+    normalized_tag = canonical_annotation_tag(tag)
+    return PLACEHOLDER_TAG_NAMES.get(normalized_tag, normalized_tag.upper())
+
+
+def canonical_annotation_tag(tag: str) -> str:
+    return tag.strip().casefold().replace("-", "_").replace(" ", "_")
 
 
 def analyze_text(

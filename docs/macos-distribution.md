@@ -26,6 +26,14 @@ python scripts/build_desktop.py \
 
 That produces `dist/OpenAnonymizer.app` with the bundled OCR runtime if `vendor/tesseract_runtime` exists.
 
+Build the DMG:
+
+```bash
+python scripts/build_macos_dmg.py
+```
+
+That produces `release/open-anonymizer-macos.dmg` using the same white icon asset as the app bundle.
+
 ## Notarize
 
 Create a notarytool profile once:
@@ -37,16 +45,10 @@ xcrun notarytool store-credentials open-anonymizer-notary \
   --password "app-specific-password"
 ```
 
-Zip the app for upload:
+Submit the DMG for notarization:
 
 ```bash
-ditto -c -k --keepParent dist/OpenAnonymizer.app dist/OpenAnonymizer-macos.zip
-```
-
-Submit and wait:
-
-```bash
-xcrun notarytool submit dist/OpenAnonymizer-macos.zip \
+xcrun notarytool submit release/open-anonymizer-macos.dmg \
   --keychain-profile open-anonymizer-notary \
   --wait
 ```
@@ -54,7 +56,7 @@ xcrun notarytool submit dist/OpenAnonymizer-macos.zip \
 Staple the ticket after approval:
 
 ```bash
-xcrun stapler staple dist/OpenAnonymizer.app
+xcrun stapler staple release/open-anonymizer-macos.dmg
 ```
 
 ## Why this matters

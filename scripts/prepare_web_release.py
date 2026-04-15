@@ -18,7 +18,7 @@ from open_anonymizer import __version__
 
 
 APP_NAME = "Open Anonymizer"
-DEFAULT_MACOS_ARCHIVE_NAME = "open-anonymizer-macos.zip"
+DEFAULT_MACOS_ARCHIVE_NAME = "open-anonymizer-macos.dmg"
 
 
 @dataclass
@@ -55,7 +55,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--macos-archive",
         type=Path,
-        help=f"Optional path to the macOS zip archive. Defaults to release/{DEFAULT_MACOS_ARCHIVE_NAME}.",
+        help=f"Optional path to the macOS DMG. Defaults to release/{DEFAULT_MACOS_ARCHIVE_NAME}.",
     )
     parser.add_argument(
         "--windows-installer",
@@ -87,7 +87,7 @@ def build_release_artifacts(args: argparse.Namespace) -> list[ReleaseArtifact]:
             platform="macos",
             label="Download for macOS",
             filename=macos_archive.name,
-            install_hint="Unzip the download, then drag OpenAnonymizer.app into Applications.",
+            install_hint="Open the disk image, then drag OpenAnonymizer.app into Applications.",
             source_path=str(macos_archive),
         ),
         ReleaseArtifact(

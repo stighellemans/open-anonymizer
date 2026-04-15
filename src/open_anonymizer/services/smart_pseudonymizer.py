@@ -24,6 +24,7 @@ from open_anonymizer.services.deduce_backend import (
     BackendAnalysisResult,
     BackendAnnotation,
     analyze_text,
+    canonical_annotation_tag,
     placeholder_tag_name,
 )
 
@@ -33,7 +34,13 @@ SMART_DATE_SHIFT_WARNING = (
     "anchor was configured."
 )
 PERSON_TAGS = {"patient", "person", "persoon"}
-INSTITUTION_TAGS = {"hospital", "institution", "ziekenhuis", "zorginstelling"}
+INSTITUTION_TAGS = {
+    "hospital",
+    "institution",
+    "healthcare_institution",
+    "ziekenhuis",
+    "zorginstelling",
+}
 DATE_TAGS = {"date", "datum"}
 ADDRESS_PLACEHOLDER_TAG = "LOCATION"
 
@@ -276,7 +283,8 @@ class SmartPseudonymizer:
             tuple(
                 annotation
                 for annotation in analysis.annotations
-                if annotation.tag not in PERSON_TAGS | INSTITUTION_TAGS | DATE_TAGS
+                if canonical_annotation_tag(annotation.tag)
+                not in PERSON_TAGS | INSTITUTION_TAGS | DATE_TAGS
             )
         )
         replacement_references: dict[str, list[str]] = defaultdict(list)
@@ -286,12 +294,13 @@ class SmartPseudonymizer:
 
         for annotation in analysis.annotations:
             parts.append(analysis.text[current_position : annotation.start_char])
+            normalized_tag = canonical_annotation_tag(annotation.tag)
 
-            if annotation.tag in PERSON_TAGS:
-                replacement = self._person_replacement(annotation.text, annotation.tag)
-            elif annotation.tag in INSTITUTION_TAGS:
-                replacement = self._institution_replacement(annotation.text, annotation.tag)
-            elif annotation.tag in DATE_TAGS:
+            if normalized_tag in PERSON_TAGS:
+                replacement = self._person_replacement(annotation.text, normalized_tag)
+            elif normalized_tag in INSTITUTION_TAGS:
+                replacement = self._institution_replacement(annotation.text, normalized_tag)
+            elif normalized_tag in DATE_TAGS:
                 replacement = self._shift_date_literal(annotation.text)
                 replaced_dates = True
             else:

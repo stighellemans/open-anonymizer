@@ -31,6 +31,8 @@ python scripts/build_windows_installer.py
 
 That produces a versioned installer executable in `release/`.
 
+If `build/OpenAnonymizer.ico` exists from the desktop build step, the generated `setup.exe` will reuse that icon.
+
 ## Installer Behavior
 
 - Installs into `Program Files`

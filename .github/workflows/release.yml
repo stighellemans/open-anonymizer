@@ -33,11 +33,9 @@ jobs:
       - name: Build application
         run: python scripts/build_desktop.py
 
-      - name: Create macOS release archive
+      - name: Create macOS disk image
         if: runner.os == 'macOS'
-        run: |
-          mkdir -p release
-          ditto -c -k --keepParent dist/OpenAnonymizer.app release/open-anonymizer-macos.zip
+        run: python scripts/build_macos_dmg.py
 
       - name: Install Inno Setup
         if: runner.os == 'Windows'

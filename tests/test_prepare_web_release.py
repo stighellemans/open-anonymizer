@@ -60,4 +60,5 @@ def test_prepare_web_release_writes_manifest_checksums_and_page(tmp_path: Path) 
 
     page = (output_dir / "index.html").read_text(encoding="utf-8")
     assert "Download for macOS" in page
+    assert "Open the disk image" in page
     assert "Pending: build" in page

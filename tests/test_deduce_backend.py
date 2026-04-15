@@ -9,6 +9,7 @@ from open_anonymizer.services.deduce_backend import (
     build_backend_config,
     build_backend_metadata,
     deidentify_text,
+    placeholder_tag_name,
 )
 
 
@@ -114,6 +115,18 @@ def test_deidentify_text_matches_reordered_custom_name_and_address_variants() ->
     )
 
     assert result == "[PERSON-1] habite [LOCATION-1]."
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "healthcare_institution",
+        "healthcare institution",
+        "healthcare-institution",
+    ],
+)
+def test_placeholder_tag_name_normalizes_healthcare_institution_aliases(tag: str) -> None:
+    assert placeholder_tag_name(tag) == "INSTITUTION"
 
 
 @pytest.mark.parametrize(
