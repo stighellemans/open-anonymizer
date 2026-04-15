@@ -4,8 +4,8 @@ import threading
 import time
 from zipfile import ZipFile
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QPushButton, QToolButton
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QToolButton
 
 from open_anonymizer.models import (
     AnonymizationSettings,
@@ -15,7 +15,12 @@ from open_anonymizer.models import (
 )
 from open_anonymizer.services.importer import ImportCancelledError
 from open_anonymizer.ui.anonymization_dialog import save_anonymization_settings
-from open_anonymizer.ui.main_window import DOCUMENT_ID_ROLE, MainWindow, STATUS_COLORS
+from open_anonymizer.ui.main_window import (
+    DOCUMENT_ID_ROLE,
+    MainWindow,
+    STATUS_COLORS,
+    recommended_window_size,
+)
 
 
 def _wait_for_document_import(window: MainWindow, qtbot, document: ImportedDocument) -> None:
@@ -58,6 +63,54 @@ def test_main_window_shows_application_branding_icon(qtbot) -> None:
     assert header_icon is not None
     assert window.windowIcon().isNull() is False
     assert header_icon.pixmap().isNull() is False
+
+
+def test_recommended_window_size_stays_within_available_screen() -> None:
+    size = recommended_window_size(QSize(900, 580))
+
+    assert size.width() <= 900
+    assert size.height() <= 580
+    assert size.width() > 0
+    assert size.height() > 0
+
+
+def test_main_window_uses_scrollable_left_panel_and_compact_customize_button(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    left_panel_scroll_area = window.findChild(QScrollArea, "leftPanelScrollArea")
+
+    assert left_panel_scroll_area is not None
+    assert (
+        left_panel_scroll_area.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert (
+        window.customize_anonymization_button.sizePolicy().horizontalPolicy()
+        == window.customize_anonymization_button.sizePolicy().Policy.Maximum
+    )
+
+
+def test_main_window_can_enable_background_backend_warmup(qtbot, monkeypatch) -> None:
+    scheduled: list[object] = []
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.QTimer.singleShot",
+        lambda interval, callback: (scheduled.append(interval), callback()),
+    )
+    monkeypatch.setattr(
+        window,
+        "schedule_backend_warmup",
+        lambda: scheduled.append("scheduled"),
+    )
+
+    window.start_background_backend_warmup()
+
+    assert window._background_backend_warmup_enabled is True
+    assert scheduled == [0, "scheduled"]
 
 
 def test_main_window_shows_bug_report_link(qtbot, monkeypatch) -> None:
@@ -653,6 +706,30 @@ def test_main_window_auto_processes_pasted_text_and_reprocesses_after_settings_c
 
     assert calls == [("paste", "First source document", "Grace")]
     assert window.output_view.toPlainText() == "Grace:First source document"
+
+
+def test_main_window_queues_paste_reprocessing_while_worker_is_active(qtbot, monkeypatch) -> None:
+    started: list[str] = []
+    cancelled: list[str] = []
+
+    class FakeWorker:
+        def cancel(self) -> None:
+            cancelled.append("cancelled")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.set_pasted_text("First source document")
+    window.paste_processing_timer.stop()
+    window.paste_processing_worker = FakeWorker()
+    window.paste_processing_active = True
+    monkeypatch.setattr(window, "process_pasted_text", lambda: started.append("started"))
+
+    window.schedule_pasted_text_processing(debounce=False)
+
+    assert started == []
+    assert cancelled == ["cancelled"]
+    assert window._paste_processing_restart_requested is True
+    assert window._paste_processing_restart_debounce is False
 
 
 def test_main_window_selects_newly_imported_file_after_import(

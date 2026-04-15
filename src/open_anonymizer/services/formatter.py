@@ -14,6 +14,14 @@ from PySide6.QtGui import (
     QTextDocument,
 )
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    NameObject,
+    NumberObject,
+    create_string_object,
+)
 
 from open_anonymizer.models import ImportedDocument, ProcessedDocument
 
@@ -76,9 +84,7 @@ def render_document_as_pdf(
     pdf_writer = PdfWriter()
     for page_index, page_text in enumerate(page_texts):
         width, height = page_sizes[min(page_index, len(page_sizes) - 1)]
-        page_pdf = _render_pdf_page_pdf_bytes(page_text, width, height)
-        reader = PdfReader(BytesIO(page_pdf))
-        for page in reader.pages:
+        for page in _render_pdf_pages(page_text, width, height):
             pdf_writer.add_page(page)
 
     if not pdf_writer.pages:
@@ -189,6 +195,170 @@ def _render_pdf_page_pdf_bytes(
 
     buffer.close()
     return bytes(byte_array)
+
+
+def _render_pdf_pages(
+    text: str,
+    page_width: float,
+    page_height: float,
+):
+    reader = PdfReader(BytesIO(_render_pdf_page_pdf_bytes(text, page_width, page_height)))
+    pages = list(reader.pages)
+    if pages and not _pdf_pages_match_text(pages, text):
+        pages[0].merge_page(_build_extractable_text_overlay_page(text, page_width, page_height))
+    return pages
+
+
+def _pdf_pages_match_text(pages, expected_text: str) -> bool:
+    extracted_text = "\n".join(page.extract_text() or "" for page in pages)
+    return _collapse_whitespace(extracted_text) == _collapse_whitespace(expected_text)
+
+
+def _collapse_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _build_extractable_text_overlay_page(
+    text: str,
+    page_width: float,
+    page_height: float,
+):
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=page_width, height=page_height)
+    font_resource_name = NameObject("/F1")
+    font_ref = writer._add_object(_build_extractable_font_dictionary(writer, text))
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject({font_resource_name: font_ref}),
+        }
+    )
+
+    content = DecodedStreamObject()
+    content.set_data(
+        _build_extractable_text_content_stream(
+            text,
+            page_height,
+            font_resource_name,
+        )
+    )
+    page[NameObject("/Contents")] = writer._add_object(content)
+
+    output = BytesIO()
+    writer.write(output)
+    return PdfReader(BytesIO(output.getvalue())).pages[0]
+
+
+def _build_extractable_font_dictionary(
+    writer: PdfWriter,
+    text: str,
+) -> DictionaryObject:
+    to_unicode_stream = DecodedStreamObject()
+    to_unicode_stream.set_data(_build_to_unicode_cmap(text))
+    to_unicode_ref = writer._add_object(to_unicode_stream)
+
+    cid_font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/CIDFontType2"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+            NameObject("/CIDSystemInfo"): DictionaryObject(
+                {
+                    NameObject("/Registry"): create_string_object("Adobe"),
+                    NameObject("/Ordering"): create_string_object("Identity"),
+                    NameObject("/Supplement"): NumberObject(0),
+                }
+            ),
+        }
+    )
+    cid_font_ref = writer._add_object(cid_font)
+
+    return DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type0"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+            NameObject("/Encoding"): NameObject("/Identity-H"),
+            NameObject("/DescendantFonts"): ArrayObject([cid_font_ref]),
+            NameObject("/ToUnicode"): to_unicode_ref,
+        }
+    )
+
+
+def _build_extractable_text_content_stream(
+    text: str,
+    page_height: float,
+    font_resource_name: NameObject,
+) -> bytes:
+    encoded_text, _ = _encode_text_for_overlay(text)
+    y_position = max(1.0, page_height - 1.0)
+    return (
+        "q\n"
+        "BT\n"
+        f"{font_resource_name} 1 Tf\n"
+        f"1 0 0 1 1 {_format_pdf_number(y_position)} Tm\n"
+        "3 Tr\n"
+        f"<{encoded_text}> Tj\n"
+        "ET\n"
+        "Q\n"
+    ).encode("ascii")
+
+
+def _build_to_unicode_cmap(text: str) -> bytes:
+    _, character_codes = _encode_text_for_overlay(text)
+    mapping_lines = [
+        f"<{code:04X}> <{character.encode('utf-16-be').hex().upper()}>"
+        for character, code in character_codes.items()
+    ]
+    lines = [
+        "/CIDInit /ProcSet findresource begin",
+        "12 dict begin",
+        "begincmap",
+        "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+        "/CMapName /Adobe-Identity-UCS def",
+        "/CMapType 2 def",
+        "1 begincodespacerange",
+        "<0001> <FFFF>",
+        "endcodespacerange",
+    ]
+    for chunk_start in range(0, len(mapping_lines), 100):
+        chunk = mapping_lines[chunk_start : chunk_start + 100]
+        lines.append(f"{len(chunk)} beginbfchar")
+        lines.extend(chunk)
+        lines.append("endbfchar")
+    lines.extend(
+        [
+            "endcmap",
+            "CMapName currentdict /CMap defineresource pop",
+            "end",
+            "end",
+            "",
+        ]
+    )
+    return "\n".join(lines).encode("ascii")
+
+
+def _encode_text_for_overlay(text: str) -> tuple[str, dict[str, int]]:
+    character_codes: dict[str, int] = {}
+    encoded_characters: list[str] = []
+    next_code = 1
+
+    for character in text:
+        code = character_codes.get(character)
+        if code is None:
+            if next_code > 0xFFFF:
+                raise ValueError("PDF overlay text exceeds the supported character set size.")
+            code = next_code
+            character_codes[character] = code
+            next_code += 1
+        encoded_characters.append(f"{code:04X}")
+
+    return "".join(encoded_characters), character_codes
+
+
+def _format_pdf_number(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
 def _ensure_pdf_application() -> QGuiApplication:

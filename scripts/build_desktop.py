@@ -114,6 +114,44 @@ def _build_macos_icns(icon_path: Path) -> Path | None:
     return icns_path
 
 
+def _build_windows_ico(icon_path: Path) -> Path | None:
+    if sys.platform != "win32" or not icon_path.exists():
+        return None
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    source_image = QImage(str(icon_path))
+    if source_image.isNull():
+        print(f"Skipping Windows executable icon because {icon_path} could not be loaded.")
+        return None
+
+    size = 256
+    image = QImage(size, size, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    scaled_image = source_image.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x_offset = (size - scaled_image.width()) / 2
+    y_offset = (size - scaled_image.height()) / 2
+    painter.drawImage(int(x_offset), int(y_offset), scaled_image)
+    painter.end()
+
+    build_dir = REPO_ROOT / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    ico_path = build_dir / "OpenAnonymizer.ico"
+    if not image.save(str(ico_path)):
+        raise RuntimeError(f"Failed to render Windows icon asset: {ico_path}")
+    return ico_path
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build the desktop app with optional bundled OCR runtime.")
     parser.add_argument(
@@ -176,6 +214,10 @@ def build_pyinstaller_args(args: argparse.Namespace) -> list[str]:
             pyinstaller_args.extend(["--codesign-identity", args.codesign_identity])
         if args.osx_entitlements_file:
             pyinstaller_args.extend(["--osx-entitlements-file", str(args.osx_entitlements_file.resolve())])
+    elif sys.platform == "win32":
+        windows_icon = _build_windows_ico(APP_ICON_SOURCE)
+        if windows_icon is not None:
+            pyinstaller_args.extend(["--icon", str(windows_icon)])
 
     runtime_dir = args.tesseract_runtime_dir.resolve()
     pyinstaller_args.extend(_collect_tesseract_runtime_args(runtime_dir))

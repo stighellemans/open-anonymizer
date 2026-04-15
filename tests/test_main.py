@@ -32,6 +32,9 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
         def show(self) -> None:
             events.append("show")
 
+        def start_background_backend_warmup(self) -> None:
+            events.append("warmup")
+
     monkeypatch.setattr(main_module, "QApplication", FakeApplication)
     monkeypatch.setattr(main_module, "MainWindow", FakeWindow)
     monkeypatch.setattr(main_module, "application_icon", lambda: object())
@@ -43,4 +46,6 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
     result = main_module.main()
 
     assert result == 17
+    assert "warmup" in events
+    assert events.index("warmup") < events.index("exec")
     assert events[-1] == "cleanup"

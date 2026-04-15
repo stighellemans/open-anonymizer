@@ -35,7 +35,7 @@ def _runtime_root_candidates() -> list[Path]:
 
     executable_path = Path(sys.executable).resolve()
     candidates.append(executable_path.parent)
-    candidates.extend(executable_path.parents[:3])
+    candidates.extend(list(executable_path.parents)[:3])
     repo_root = Path(__file__).resolve().parents[3]
     candidates.append(repo_root)
     candidates.append(repo_root / "vendor")

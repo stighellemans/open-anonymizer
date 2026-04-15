@@ -7,6 +7,9 @@ from PySide6.QtWidgets import QApplication
 from open_anonymizer.branding import application_icon
 from open_anonymizer.ui import MainWindow
 
+
+WINDOWS_APP_ID = "com.openanonymizer.app"
+
 APP_STYLESHEET = """
 QWidget {
     background: #f6f3ef;
@@ -165,6 +168,14 @@ QFrame#dropArea[dragActive="true"] {
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("Open Anonymizer")
     app.setOrganizationName("Open Anonymizer")
@@ -173,6 +184,7 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
+    window.start_background_backend_warmup()
     try:
         return app.exec()
     finally:

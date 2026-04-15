@@ -22,6 +22,7 @@ def _load_build_desktop_module():
 def test_build_pyinstaller_args_adds_custom_hooks_and_qt_exclusions(monkeypatch) -> None:
     build_desktop = _load_build_desktop_module()
     monkeypatch.setattr(build_desktop, "_build_macos_icns", lambda svg_path: None)
+    monkeypatch.setattr(build_desktop, "_build_windows_ico", lambda svg_path: None)
 
     args = build_desktop.build_argument_parser().parse_args([])
     pyinstaller_args = build_desktop.build_pyinstaller_args(args)
@@ -42,6 +43,7 @@ def test_build_pyinstaller_args_adds_macos_options_only_on_macos(monkeypatch, tm
     icon_path = tmp_path / "OpenAnonymizer.icns"
     icon_path.write_bytes(b"icns")
     monkeypatch.setattr(build_desktop, "_build_macos_icns", lambda source_path: icon_path)
+    monkeypatch.setattr(build_desktop, "_build_windows_ico", lambda source_path: tmp_path / "OpenAnonymizer.ico")
 
     args = build_desktop.build_argument_parser().parse_args([])
 
@@ -55,7 +57,8 @@ def test_build_pyinstaller_args_adds_macos_options_only_on_macos(monkeypatch, tm
     monkeypatch.setattr(build_desktop.sys, "platform", "win32")
     windows_args = build_desktop.build_pyinstaller_args(args)
     assert "--osx-bundle-identifier" not in windows_args
-    assert "--icon" not in windows_args
+    assert "--icon" in windows_args
+    assert str(tmp_path / "OpenAnonymizer.ico") in windows_args
 
 
 def test_runtime_source_only_imports_expected_qt_modules() -> None:

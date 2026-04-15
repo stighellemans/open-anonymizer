@@ -112,6 +112,23 @@ def _backend_cache_dir() -> Path:
     return cache_dir
 
 
+def _bundled_lookup_cache_dir() -> Path | None:
+    import belgian_deduce
+
+    package_dir = Path(belgian_deduce.__file__).resolve().parent
+    lookup_dir = package_dir / "data" / "lookup"
+    if (lookup_dir / "cache" / "lookup_structs.pickle").exists():
+        return lookup_dir
+    return None
+
+
+def _lookup_cache_dir() -> Path:
+    bundled_cache_dir = _bundled_lookup_cache_dir()
+    if bundled_cache_dir is not None:
+        return bundled_cache_dir
+    return _backend_cache_dir()
+
+
 def _dedupe_nonempty(items: list[str]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
@@ -263,7 +280,7 @@ def _backend_model(flags_key: tuple[bool, ...]) -> Any:
     return Deduce(
         load_base_config=False,
         config=build_backend_config(_flags_from_key(flags_key)),
-        cache_path=_backend_cache_dir(),
+        cache_path=_lookup_cache_dir(),
     )
 
 
@@ -288,6 +305,10 @@ def deidentify_text_with_references(
 
 def deidentify_text(text: str, settings: AnonymizationSettings) -> str:
     return deidentify_text_with_references(text, settings).deidentified_text
+
+
+def warm_backend_for_settings(settings: AnonymizationSettings) -> None:
+    _backend_model(settings.recognition_flags.as_key())
 
 
 def placeholder_tag_name(tag: str) -> str:

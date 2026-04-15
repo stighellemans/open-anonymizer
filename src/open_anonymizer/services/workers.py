@@ -6,7 +6,13 @@ import threading
 
 from PySide6.QtCore import QObject, Signal
 
-from open_anonymizer.models import ImportedDocument, ProcessBatchRequest, ProcessedDocument
+from open_anonymizer.models import (
+    AnonymizationSettings,
+    ImportedDocument,
+    ProcessBatchRequest,
+    ProcessedDocument,
+)
+from open_anonymizer.services.deduce_backend import warm_backend_for_settings
 from open_anonymizer.services.deidentifier import deidentify_document
 from open_anonymizer.services.importer import (
     DocumentImportError,
@@ -40,6 +46,23 @@ class ImportDocumentResult:
     document: ImportedDocument
 
 
+@dataclass(frozen=True)
+class BackendWarmupRequest:
+    settings: AnonymizationSettings
+    flags_key: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class BackendWarmupResult:
+    flags_key: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class BackendWarmupFailure:
+    message: str
+    flags_key: tuple[bool, ...]
+
+
 class BatchWorkerSignals(QObject):
     completed = Signal(object)
     failed = Signal(object)
@@ -47,6 +70,11 @@ class BatchWorkerSignals(QObject):
 
 class ImportWorkerSignals(QObject):
     completed = Signal(object)
+
+
+class BackendWarmupSignals(QObject):
+    completed = Signal(object)
+    failed = Signal(object)
 
 
 class _DaemonWorker:
@@ -158,6 +186,39 @@ class ImportDocumentRunnable(_DaemonWorker):
                 document_id,
                 str(exc) or "Unexpected import failure.",
             )
+
+
+class BackendWarmupRunnable(_DaemonWorker):
+    def __init__(self, request: BackendWarmupRequest):
+        super().__init__(
+            thread_name=(
+                "open-anonymizer-backend-warmup-"
+                + "".join("1" if enabled else "0" for enabled in request.flags_key)
+            )
+        )
+        self.request = request
+        self.signals = BackendWarmupSignals()
+
+    def _run(self) -> None:
+        try:
+            warm_backend_for_settings(self.request.settings)
+        except Exception as exc:
+            if self.is_cancelled():
+                return
+            self.signals.failed.emit(
+                BackendWarmupFailure(
+                    message=str(exc) or "Backend warmup failed.",
+                    flags_key=self.request.flags_key,
+                )
+            )
+            return
+
+        if self.is_cancelled():
+            return
+
+        self.signals.completed.emit(
+            BackendWarmupResult(flags_key=self.request.flags_key)
+        )
 
 
 def _build_import_error_document(

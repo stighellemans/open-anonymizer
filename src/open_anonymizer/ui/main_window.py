@@ -47,6 +47,10 @@ from open_anonymizer.services.workers import (
     BatchProcessingFailure,
     BatchProcessingResult,
     BatchProcessorRunnable,
+    BackendWarmupFailure,
+    BackendWarmupRequest,
+    BackendWarmupResult,
+    BackendWarmupRunnable,
     ImportDocumentRequest,
     ImportDocumentResult,
     ImportDocumentRunnable,
@@ -83,6 +87,20 @@ SETTINGS_APPLICATION = "Open Anonymizer"
 EXPORT_DIRECTORY_SETTINGS_KEY = "export/last_directory"
 ANONYMIZATION_SUMMARY_VISIBLE_LINES = 6
 BUG_REPORT_FORM_URL = "https://forms.gle/Ww8d6JajzAsbpxH38"
+DEFAULT_WINDOW_SIZE = QSize(1160, 664)
+MINIMUM_WINDOW_SIZE = QSize(840, 520)
+WINDOW_SCREEN_MARGIN = 48
+
+
+def recommended_window_size(available_size: QSize) -> QSize:
+    def fit_dimension(preferred: int, minimum: int, available: int) -> int:
+        usable = max(minimum, available - WINDOW_SCREEN_MARGIN)
+        return max(1, min(preferred, usable, available))
+
+    return QSize(
+        fit_dimension(DEFAULT_WINDOW_SIZE.width(), MINIMUM_WINDOW_SIZE.width(), available_size.width()),
+        fit_dimension(DEFAULT_WINDOW_SIZE.height(), MINIMUM_WINDOW_SIZE.height(), available_size.height()),
+    )
 
 
 def _format_patient_summary(anonymization_settings: AnonymizationSettings) -> str:
@@ -486,6 +504,13 @@ class MainWindow(QMainWindow):
         self.paste_processing_active = False
         self.paste_processing_worker: BatchProcessorRunnable | None = None
         self.paste_processing_generation = 0
+        self._paste_processing_restart_requested = False
+        self._paste_processing_restart_debounce = False
+        self._background_backend_warmup_enabled = False
+        self.backend_warmup_worker: BackendWarmupRunnable | None = None
+        self._active_backend_warmup_flags_key: tuple[bool, ...] | None = None
+        self._queued_backend_warmup_flags_key: tuple[bool, ...] | None = None
+        self._warmed_backend_flags_key: tuple[bool, ...] | None = None
         self._closing = False
         self.paste_processing_timer = QTimer(self)
         self.paste_processing_timer.setSingleShot(True)
@@ -494,7 +519,12 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Open Anonymizer")
         self.setWindowIcon(application_icon())
-        self.resize(1160, 664)
+        initial_size = self._recommended_window_size()
+        self.resize(initial_size)
+        self.setMinimumSize(
+            min(MINIMUM_WINDOW_SIZE.width(), initial_size.width()),
+            min(MINIMUM_WINDOW_SIZE.height(), initial_size.height()),
+        )
         self._build_ui()
         self.refresh_anonymization_summary()
         self.refresh_document_list()
@@ -543,7 +573,12 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
 
         left_panel = QWidget()
+        left_panel.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
 
         anonymization_group = QGroupBox("Anonymization")
@@ -579,14 +614,26 @@ class MainWindow(QMainWindow):
         )
         self.anonymization_summary_scroll.setWidget(summary_body)
         self.customize_anonymization_button = QPushButton("Customize anonymization")
+        self.customize_anonymization_button.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
         self.customize_anonymization_button.clicked.connect(
             self.open_anonymization_dialog
         )
         anonymization_layout.addWidget(self.anonymization_summary_scroll)
-        anonymization_layout.addWidget(self.customize_anonymization_button)
+        anonymization_layout.addWidget(
+            self.customize_anonymization_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
 
         self.drop_area = DropArea()
         self.drop_area.setMinimumHeight(96)
+        self.drop_area.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         self.drop_area.import_requested.connect(self.import_files)
         self.drop_area.files_dropped.connect(self.handle_dropped_paths)
         self.drop_area.text_dropped.connect(self.handle_dropped_text)
@@ -596,6 +643,10 @@ class MainWindow(QMainWindow):
             "Paste medical text here. It is processed automatically and can be copied."
         )
         self.paste_input.setMinimumHeight(112)
+        self.paste_input.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         self.paste_input.textChanged.connect(self.handle_paste_input_changed)
 
         self.document_list = DocumentListWidget()
@@ -661,6 +712,15 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.document_list, stretch=1)
         left_layout.addLayout(document_actions)
 
+        left_scroll_area = QScrollArea()
+        left_scroll_area.setObjectName("leftPanelScrollArea")
+        left_scroll_area.setWidgetResizable(True)
+        left_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        left_scroll_area.setWidget(left_panel)
+
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(14)
@@ -681,11 +741,12 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.document_status_label)
         right_layout.addWidget(self.output_view, stretch=1)
 
-        splitter.addWidget(left_panel)
+        splitter.addWidget(left_scroll_area)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([420, 740])
+        initial_size = self.size()
+        splitter.setSizes([min(400, int(initial_size.width() * 0.38)), max(480, int(initial_size.width() * 0.62))])
 
         root_layout.addWidget(splitter, stretch=1)
         self.setCentralWidget(root)
@@ -709,6 +770,13 @@ class MainWindow(QMainWindow):
         self.bug_report_link_button.clicked.connect(self.open_bug_report_form)
         status_bar.addPermanentWidget(self.bug_report_link_button)
         status_bar.setFixedHeight(max(20, self.bug_report_link_button.sizeHint().height() + 2))
+
+    def _recommended_window_size(self) -> QSize:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return DEFAULT_WINDOW_SIZE
+
+        return recommended_window_size(screen.availableGeometry().size())
 
     def open_bug_report_form(self) -> None:
         QDesktopServices.openUrl(QUrl(BUG_REPORT_FORM_URL))
@@ -764,6 +832,66 @@ class MainWindow(QMainWindow):
 
         return document_smart_key(document)
 
+    def start_background_backend_warmup(self) -> None:
+        if self._background_backend_warmup_enabled:
+            return
+
+        self._background_backend_warmup_enabled = True
+        QTimer.singleShot(0, self.schedule_backend_warmup)
+
+    def schedule_backend_warmup(self) -> None:
+        if not self._background_backend_warmup_enabled or self._closing:
+            return
+
+        flags_key = self.anonymization_settings.recognition_flags.as_key()
+        if self._warmed_backend_flags_key == flags_key:
+            return
+
+        if self.backend_warmup_worker is not None:
+            if self._active_backend_warmup_flags_key == flags_key:
+                return
+            self._queued_backend_warmup_flags_key = flags_key
+            return
+
+        worker = BackendWarmupRunnable(
+            BackendWarmupRequest(
+                settings=self.anonymization_settings,
+                flags_key=flags_key,
+            )
+        )
+        worker.signals.completed.connect(self.on_backend_warmup_completed)
+        worker.signals.failed.connect(self.on_backend_warmup_failed)
+        self.backend_warmup_worker = worker
+        self._active_backend_warmup_flags_key = flags_key
+        worker.start()
+
+    def on_backend_warmup_completed(self, result: BackendWarmupResult) -> None:
+        self.backend_warmup_worker = None
+        self._active_backend_warmup_flags_key = None
+        self._warmed_backend_flags_key = result.flags_key
+        queued_flags_key = self._queued_backend_warmup_flags_key
+        self._queued_backend_warmup_flags_key = None
+
+        if (
+            queued_flags_key is not None
+            and queued_flags_key != result.flags_key
+            and queued_flags_key == self.anonymization_settings.recognition_flags.as_key()
+        ):
+            self.schedule_backend_warmup()
+
+    def on_backend_warmup_failed(self, failure: BackendWarmupFailure) -> None:
+        self.backend_warmup_worker = None
+        self._active_backend_warmup_flags_key = None
+        queued_flags_key = self._queued_backend_warmup_flags_key
+        self._queued_backend_warmup_flags_key = None
+
+        if (
+            queued_flags_key is not None
+            and queued_flags_key != failure.flags_key
+            and queued_flags_key == self.anonymization_settings.recognition_flags.as_key()
+        ):
+            self.schedule_backend_warmup()
+
     def apply_anonymization_settings(
         self,
         anonymization_settings: AnonymizationSettings,
@@ -776,6 +904,7 @@ class MainWindow(QMainWindow):
 
         self.anonymization_settings = anonymization_settings
         self.refresh_anonymization_summary()
+        self.schedule_backend_warmup()
 
         if persist:
             save_anonymization_settings(anonymization_settings)
@@ -1367,32 +1496,51 @@ class MainWindow(QMainWindow):
 
     def schedule_pasted_text_processing(self, *, debounce: bool) -> None:
         self.paste_processing_timer.stop()
-        if self.paste_processing_worker is not None:
-            self.paste_processing_worker.cancel()
-            self.paste_processing_worker = None
         self.paste_processing_generation += 1
         self.paste_processed_document = None
         self.paste_error_message = None
-        self.paste_processing_active = False
 
         if not self.current_pasted_text():
+            self._paste_processing_restart_requested = False
+            self._paste_processing_restart_debounce = False
+            if self.paste_processing_worker is not None:
+                self.paste_processing_worker.cancel()
             self.update_output_panel()
             self.refresh_actions()
             self.refresh_anonymization_summary()
             return
 
-        if debounce:
-            self.paste_processing_timer.start()
+        if self.paste_processing_worker is not None:
+            self.paste_processing_worker.cancel()
+            self._queue_paste_processing_restart(debounce)
         else:
-            self.process_pasted_text()
+            self._schedule_paste_processing_run(debounce)
 
         self.update_output_panel()
         self.refresh_actions()
         self.refresh_anonymization_summary()
 
+    def _queue_paste_processing_restart(self, debounce: bool) -> None:
+        if self._paste_processing_restart_requested:
+            self._paste_processing_restart_debounce = (
+                self._paste_processing_restart_debounce and debounce
+            )
+        else:
+            self._paste_processing_restart_requested = True
+            self._paste_processing_restart_debounce = debounce
+        self.paste_processing_active = True
+
+    def _schedule_paste_processing_run(self, debounce: bool) -> None:
+        if debounce:
+            self.paste_processing_active = False
+            self.paste_processing_timer.start()
+            return
+
+        self.process_pasted_text()
+
     def process_pasted_text(self) -> None:
         pasted_text = self.current_pasted_text()
-        if not pasted_text:
+        if not pasted_text or self.paste_processing_worker is not None:
             return
 
         generation = self.paste_processing_generation
@@ -1419,27 +1567,39 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def on_paste_processing_completed(self, result: BatchProcessingResult) -> None:
-        if result.context_generation != self.paste_processing_generation:
-            return
-
         self.paste_processing_worker = None
+        restart_requested = self._paste_processing_restart_requested
+        restart_debounce = self._paste_processing_restart_debounce
+        self._paste_processing_restart_requested = False
+        self._paste_processing_restart_debounce = False
         self.paste_processing_active = False
-        self.paste_error_message = next(iter(result.errors.values()), None)
-        self.paste_processed_document = next(
-            iter(result.processed_documents.values()),
-            None,
-        )
+
+        if result.context_generation == self.paste_processing_generation:
+            self.paste_error_message = next(iter(result.errors.values()), None)
+            self.paste_processed_document = next(
+                iter(result.processed_documents.values()),
+                None,
+            )
+
+        if restart_requested and self.current_pasted_text():
+            self._schedule_paste_processing_run(restart_debounce)
         self.update_output_panel()
         self.refresh_actions()
 
     def on_paste_processing_failed(self, failure: BatchProcessingFailure) -> None:
-        if failure.context_generation != self.paste_processing_generation:
-            return
-
         self.paste_processing_worker = None
+        restart_requested = self._paste_processing_restart_requested
+        restart_debounce = self._paste_processing_restart_debounce
+        self._paste_processing_restart_requested = False
+        self._paste_processing_restart_debounce = False
         self.paste_processing_active = False
-        self.paste_processed_document = None
-        self.paste_error_message = failure.message
+
+        if failure.context_generation == self.paste_processing_generation:
+            self.paste_processed_document = None
+            self.paste_error_message = failure.message
+
+        if restart_requested and self.current_pasted_text():
+            self._schedule_paste_processing_run(restart_debounce)
         self.update_output_panel()
         self.refresh_actions()
 
@@ -1480,6 +1640,9 @@ class MainWindow(QMainWindow):
         if self.paste_processing_worker is not None:
             self.paste_processing_worker.cancel()
             self.paste_processing_worker = None
+        if self.backend_warmup_worker is not None:
+            self.backend_warmup_worker.cancel()
+            self.backend_warmup_worker = None
         for worker in self.active_import_workers.values():
             worker.cancel()
         self.active_import_workers.clear()
