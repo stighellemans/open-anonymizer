@@ -1,16 +1,25 @@
 from .documents import (
+    AnonymizationMode,
+    AnonymizationSettings,
+    ExportMode,
     ExportResult,
     ImportedDocument,
-    PatientContext,
     ProcessBatchRequest,
     ProcessedDocument,
+    PdfPage,
+    RECOGNITION_GROUPS,
+    RecognitionFlags,
 )
 
 __all__ = [
+    "AnonymizationMode",
+    "AnonymizationSettings",
+    "ExportMode",
     "ExportResult",
     "ImportedDocument",
-    "PatientContext",
     "ProcessBatchRequest",
     "ProcessedDocument",
+    "PdfPage",
+    "RECOGNITION_GROUPS",
+    "RecognitionFlags",
 ]
-

@@ -3,34 +3,63 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QThreadPool, Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QScrollArea,
+    QStyledItemDelegate,
+    QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from open_anonymizer.models import ImportedDocument, PatientContext, ProcessBatchRequest
-from open_anonymizer.services.deidentifier import ProcessingError, parse_birthdate
+from open_anonymizer.branding import application_icon, bug_report_icon
+from open_anonymizer.models import (
+    AnonymizationSettings,
+    ExportMode,
+    ImportedDocument,
+    ProcessBatchRequest,
+)
+from open_anonymizer.services.deidentifier import document_smart_key
 from open_anonymizer.services.exporter import export_processed_documents
-from open_anonymizer.services.importer import DocumentImportError, import_file
-from open_anonymizer.services.workers import BatchProcessingResult, BatchProcessorRunnable
+from open_anonymizer.services.smart_pseudonymizer import (
+    effective_date_shift_days,
+    format_date_shift_days,
+)
+from open_anonymizer.services.workers import (
+    BatchProcessingFailure,
+    BatchProcessingResult,
+    BatchProcessorRunnable,
+    ImportDocumentRequest,
+    ImportDocumentResult,
+    ImportDocumentRunnable,
+)
+from open_anonymizer.ui.anonymization_dialog import (
+    AnonymizationDialog,
+    MODE_LABELS,
+    RECOGNITION_LABELS,
+    load_saved_anonymization_settings,
+    save_anonymization_settings,
+)
 from open_anonymizer.ui.drop_area import DropArea
+from open_anonymizer.ui.processing_text_edit import ScanningPlainTextEdit
 
 
 STATUS_LABELS = {
@@ -40,11 +69,404 @@ STATUS_LABELS = {
     "error": "Error",
 }
 STATUS_COLORS = {
-    "pending": QColor("#4b5563"),
-    "processing": QColor("#0f766e"),
-    "ready": QColor("#166534"),
-    "error": QColor("#b91c1c"),
+    "pending": QColor("#9ca3af"),
+    "processing": QColor("#f59e0b"),
+    "ready": QColor("#16a34a"),
+    "error": QColor("#dc2626"),
 }
+DOCUMENT_ID_ROLE = Qt.ItemDataRole.UserRole
+DOCUMENT_STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+DOCUMENT_SOURCE_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+DOCUMENT_ERROR_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+SETTINGS_ORGANIZATION = "Open Anonymizer"
+SETTINGS_APPLICATION = "Open Anonymizer"
+EXPORT_DIRECTORY_SETTINGS_KEY = "export/last_directory"
+ANONYMIZATION_SUMMARY_VISIBLE_LINES = 6
+BUG_REPORT_FORM_URL = "https://forms.gle/Ww8d6JajzAsbpxH38"
+
+
+def _format_patient_summary(anonymization_settings: AnonymizationSettings) -> str:
+    patient_bits: list[str] = []
+    full_name = " ".join(
+        bit
+        for bit in [
+            anonymization_settings.first_name,
+            anonymization_settings.last_name,
+        ]
+        if bit
+    ).strip()
+
+    if full_name:
+        patient_bits.append(full_name)
+
+    if anonymization_settings.birthdate:
+        patient_bits.append(
+            anonymization_settings.birthdate.strftime("%d/%m/%Y")
+        )
+
+    return ", ".join(patient_bits) if patient_bits else "None configured"
+
+
+def _format_recognition_summary(anonymization_settings: AnonymizationSettings) -> str:
+    disabled = [
+        RECOGNITION_LABELS[name].lower()
+        for name in RECOGNITION_LABELS
+        if not getattr(anonymization_settings.recognition_flags, name)
+    ]
+    if not disabled:
+        return "All categories enabled"
+    return f"Disabled: {', '.join(disabled)}"
+
+
+def _format_mode_summary(
+    anonymization_settings: AnonymizationSettings,
+    *,
+    preview_document_key: str | None = None,
+) -> str:
+    del preview_document_key
+    mode_label = MODE_LABELS.get(
+        anonymization_settings.mode,
+        MODE_LABELS["placeholders"],
+    )
+    if anonymization_settings.mode != "smart_pseudonyms":
+        return mode_label
+
+    date_shift_days = anonymization_settings.date_shift_days
+    if date_shift_days is None:
+        auto_shift_days, _ = effective_date_shift_days(
+            anonymization_settings,
+        )
+        if auto_shift_days is not None:
+            return f"{mode_label} (auto: {format_date_shift_days(auto_shift_days)})"
+        return f"{mode_label} (auto)"
+
+    return f"{mode_label} ({format_date_shift_days(date_shift_days)})"
+
+
+def _format_export_filename_summary(anonymization_settings: AnonymizationSettings) -> str:
+    if anonymization_settings.deidentify_filenames:
+        return "De-identified"
+    return "Original names"
+
+
+def main_window_qsettings() -> QSettings:
+    return QSettings(
+        QSettings.Format.IniFormat,
+        QSettings.Scope.UserScope,
+        SETTINGS_ORGANIZATION,
+        SETTINGS_APPLICATION,
+    )
+
+
+def default_export_directory() -> Path:
+    downloads_path = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.DownloadLocation
+    )
+    if downloads_path:
+        downloads_dir = Path(downloads_path).expanduser()
+        if downloads_dir.exists():
+            return downloads_dir
+
+    home_downloads = Path.home() / "Downloads"
+    if home_downloads.exists():
+        return home_downloads
+
+    return Path.home()
+
+
+def _source_kind_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in {".html", ".htm"}:
+        return "html"
+    return "text_file"
+
+
+class DocumentListItemDelegate(QStyledItemDelegate):
+    def __init__(self, parent: QListWidget):
+        super().__init__(parent)
+        self._spinner_angle = 0
+
+    def advance_spinner(self) -> None:
+        self._spinner_angle = (self._spinner_angle + 24) % 360
+        list_widget = self.parent()
+        if isinstance(list_widget, QListWidget):
+            list_widget.viewport().update()
+
+    def sizeHint(self, option, index) -> QSize:
+        del option, index
+        return QSize(0, 44)
+
+    def _card_rect(self, item_rect: QRect) -> QRectF:
+        return QRectF(item_rect.adjusted(5, 9, -10, -3))
+
+    def remove_button_rect(self, item_rect: QRect) -> QRectF:
+        card_rect = self._card_rect(item_rect)
+        button_size = 16.0
+        overlap = 4.0
+        return QRectF(
+            card_rect.right() - button_size + overlap,
+            card_rect.top() - overlap,
+            button_size,
+            button_size,
+        )
+
+    def _status_indicator_rect(self, item_rect: QRect) -> QRectF:
+        card_rect = self._card_rect(item_rect)
+        indicator_size = 16.0
+        inset = 8.0
+        return QRectF(
+            card_rect.x() + card_rect.width() - indicator_size - inset,
+            card_rect.y() + card_rect.height() - indicator_size - inset,
+            indicator_size,
+            indicator_size,
+        )
+
+    def paint(self, painter, option, index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        title = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        status = index.data(DOCUMENT_STATUS_ROLE) or "pending"
+        error_message = index.data(DOCUMENT_ERROR_ROLE) or ""
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        card_rect = self._card_rect(option.rect)
+        background = QColor("#fffdf9")
+        border = QColor("#e7ddd2")
+        title_color = QColor("#1f2933")
+
+        if selected:
+            background = QColor("#eaf4ef")
+            border = QColor("#1f4d45")
+            title_color = QColor("#14352f")
+        elif hovered:
+            background = QColor("#fdf7ef")
+            border = QColor("#eadfce")
+        elif status == "error":
+            title_color = QColor("#991b1b")
+
+        card_pen = QPen(border)
+        card_pen.setWidthF(1.0)
+        painter.setPen(card_pen)
+        painter.setBrush(background)
+        painter.drawRoundedRect(QRectF(card_rect), 14, 14)
+
+        accent_color = QColor(STATUS_COLORS.get(status, STATUS_COLORS["pending"]))
+        accent_color.setAlpha(220 if selected else 180)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(accent_color)
+        painter.drawRoundedRect(
+            QRectF(card_rect.left() + 10, card_rect.top() + 5, 4, card_rect.height() - 10),
+            2,
+            2,
+        )
+
+        button_enabled = True
+        list_widget = self.parent()
+        if isinstance(list_widget, DocumentListWidget):
+            button_enabled = list_widget.remove_enabled()
+
+        button_rect = self.remove_button_rect(option.rect)
+        indicator_rect = self._status_indicator_rect(option.rect)
+        content_rect = card_rect.adjusted(22, 0, 0, 0)
+        right_limit = min(button_rect.left(), indicator_rect.left()) - 10
+        text_width = max(0, int(right_limit - content_rect.left()))
+
+        title_font = QFont(option.font)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title_metrics = QFontMetrics(title_font)
+        title_text = title_metrics.elidedText(
+            title,
+            Qt.TextElideMode.ElideRight,
+            text_width,
+        )
+
+        title_rect = QRect(content_rect.left(), content_rect.top(), text_width, content_rect.height())
+
+        painter.setFont(title_font)
+        painter.setPen(title_color)
+        painter.drawText(
+            title_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title_text,
+        )
+
+        self._paint_remove_button(
+            painter,
+            button_rect,
+            selected=selected,
+            enabled=button_enabled,
+        )
+        self._paint_status_indicator(painter, indicator_rect, status)
+        painter.restore()
+
+    def _paint_remove_button(
+        self,
+        painter: QPainter,
+        button_rect: QRectF,
+        *,
+        selected: bool,
+        enabled: bool,
+    ) -> None:
+        fill = QColor("#f5f5f5" if not selected else "#eceff2")
+        border = QColor("#d1d5db" if not selected else "#c4cbd4")
+        icon = QColor("#6b7280")
+        if not enabled:
+            fill.setAlpha(110)
+            border.setAlpha(90)
+            icon.setAlpha(90)
+
+        button_pen = QPen(border)
+        button_pen.setWidthF(1.0)
+        painter.setPen(button_pen)
+        painter.setBrush(fill)
+        painter.drawEllipse(button_rect)
+
+        icon_pen = QPen(icon)
+        icon_pen.setWidthF(1.6)
+        icon_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(icon_pen)
+        inset = 4.5
+        painter.drawLine(
+            QPointF(button_rect.left() + inset, button_rect.top() + inset),
+            QPointF(button_rect.right() - inset, button_rect.bottom() - inset),
+        )
+        painter.drawLine(
+            QPointF(button_rect.right() - inset, button_rect.top() + inset),
+            QPointF(button_rect.left() + inset, button_rect.bottom() - inset),
+        )
+
+    def _paint_status_indicator(
+        self,
+        painter: QPainter,
+        indicator_rect: QRectF,
+        status: str,
+    ) -> None:
+        circle_rect = indicator_rect.adjusted(2, 2, -2, -2)
+        status_color = QColor(STATUS_COLORS.get(status, STATUS_COLORS["pending"]))
+
+        if status == "processing":
+            faded_color = QColor(status_color)
+            faded_color.setAlpha(55)
+            background_pen = QPen(faded_color)
+            background_pen.setWidthF(2.4)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(background_pen)
+            painter.drawEllipse(circle_rect)
+
+            spinner_pen = QPen(status_color)
+            spinner_pen.setWidthF(2.8)
+            spinner_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(spinner_pen)
+            painter.drawArc(
+                circle_rect,
+                (90 - self._spinner_angle) * 16,
+                220 * 16,
+            )
+            return
+
+        if status == "ready":
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(status_color)
+            painter.drawEllipse(circle_rect)
+
+            check_pen = QPen(QColor("#ffffff"))
+            check_pen.setWidthF(2.2)
+            check_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            check_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(check_pen)
+            painter.drawLine(
+                QPointF(circle_rect.left() + 4, circle_rect.center().y()),
+                QPointF(circle_rect.left() + 7, circle_rect.bottom() - 4),
+            )
+            painter.drawLine(
+                QPointF(circle_rect.left() + 7, circle_rect.bottom() - 4),
+                QPointF(circle_rect.right() - 4, circle_rect.top() + 4),
+            )
+            return
+
+        if status == "error":
+            painter.setBrush(QColor("#fee2e2"))
+            error_pen = QPen(status_color)
+            error_pen.setWidthF(2.0)
+            error_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(error_pen)
+            painter.drawEllipse(circle_rect)
+            painter.drawLine(
+                QPointF(circle_rect.left() + 4, circle_rect.top() + 4),
+                QPointF(circle_rect.right() - 4, circle_rect.bottom() - 4),
+            )
+            painter.drawLine(
+                QPointF(circle_rect.right() - 4, circle_rect.top() + 4),
+                QPointF(circle_rect.left() + 4, circle_rect.bottom() - 4),
+            )
+            return
+
+        pending_pen = QPen(status_color)
+        pending_pen.setWidthF(2.0)
+        painter.setPen(pending_pen)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(circle_rect)
+
+
+class DocumentListWidget(QListWidget):
+    remove_requested = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._remove_enabled = True
+
+    def set_remove_enabled(self, enabled: bool) -> None:
+        if self._remove_enabled == enabled:
+            return
+        self._remove_enabled = enabled
+        if not enabled:
+            self.viewport().unsetCursor()
+        self.viewport().update()
+
+    def remove_enabled(self) -> bool:
+        return self._remove_enabled
+
+    def mousePressEvent(self, event) -> None:
+        point = event.position().toPoint()
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._is_remove_button_hit(point)
+        ):
+            item = self.itemAt(point)
+            if item is not None:
+                document_id = item.data(DOCUMENT_ID_ROLE)
+                if document_id:
+                    self.remove_requested.emit(document_id)
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        if self._is_remove_button_hit(event.position().toPoint()):
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+            return
+        self.viewport().unsetCursor()
+
+    def leaveEvent(self, event) -> None:
+        self.viewport().unsetCursor()
+        super().leaveEvent(event)
+
+    def _is_remove_button_hit(self, point) -> bool:
+        if not self._remove_enabled:
+            return False
+        item = self.itemAt(point)
+        if item is None:
+            return False
+        delegate = self.itemDelegate()
+        if not isinstance(delegate, DocumentListItemDelegate):
+            return False
+        return delegate.remove_button_rect(self.visualItemRect(item)).contains(QPointF(point))
 
 
 class MainWindow(QMainWindow):
@@ -52,98 +474,190 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.documents: list[ImportedDocument] = []
         self.processed_documents = {}
-        self.thread_pool = QThreadPool.globalInstance()
         self.processing_active = False
         self.pending_document_ids: set[str] = set()
         self.active_batch_document_ids: set[str] = set()
-        self.patient_context_generation = 0
-        self.patient_context_error_message: str | None = None
-        self.patient_context_timer = QTimer(self)
-        self.patient_context_timer.setSingleShot(True)
-        self.patient_context_timer.setInterval(350)
-        self.patient_context_timer.timeout.connect(self.handle_patient_identifiers_changed)
-        self._paste_counter = 0
+        self.active_batch_worker: BatchProcessorRunnable | None = None
+        self.active_import_workers: dict[str, ImportDocumentRunnable] = {}
+        self.anonymization_settings_generation = 0
+        self.anonymization_settings = load_saved_anonymization_settings()
+        self.paste_processed_document: ProcessedDocument | None = None
+        self.paste_error_message: str | None = None
+        self.paste_processing_active = False
+        self.paste_processing_worker: BatchProcessorRunnable | None = None
+        self.paste_processing_generation = 0
+        self._closing = False
+        self.paste_processing_timer = QTimer(self)
+        self.paste_processing_timer.setSingleShot(True)
+        self.paste_processing_timer.setInterval(250)
+        self.paste_processing_timer.timeout.connect(self.process_pasted_text)
 
         self.setWindowTitle("Open Anonymizer")
-        self.resize(1220, 760)
+        self.setWindowIcon(application_icon())
+        self.resize(1160, 664)
         self._build_ui()
+        self.refresh_anonymization_summary()
         self.refresh_document_list()
         self.refresh_actions()
 
     def _build_ui(self) -> None:
         root = QWidget()
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(20, 20, 20, 20)
-        root_layout.setSpacing(16)
+        root_layout.setContentsMargins(16, 16, 16, 8)
+        root_layout.setSpacing(10)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(16)
+
+        title_layout = QVBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(2)
 
         title = QLabel("Open Anonymizer")
         title.setObjectName("windowTitle")
-        subtitle = QLabel("Drop text or files, remove explicit patient identifiers, and export clean output.")
+        subtitle = QLabel(
+            "Paste text or import files, configure anonymization, and copy or export clean output."
+        )
         subtitle.setObjectName("windowSubtitle")
 
-        root_layout.addWidget(title)
-        root_layout.addWidget(subtitle)
+        title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
+
+        self.header_icon_label = QLabel()
+        self.header_icon_label.setObjectName("headerIcon")
+        self.header_icon_label.setFixedSize(68, 68)
+        self.header_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.header_icon_label.setPixmap(self.windowIcon().pixmap(QSize(48, 48)))
+
+        header_layout.addWidget(
+            self.header_icon_label,
+            0,
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+        )
+        header_layout.addLayout(title_layout, stretch=1)
+
+        root_layout.addLayout(header_layout)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(14)
+        left_layout.setSpacing(12)
 
-        patient_group = QGroupBox("Patient identifiers")
-        patient_form = QFormLayout(patient_group)
-        patient_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.first_name_input = QLineEdit()
-        self.last_name_input = QLineEdit()
-        self.birthdate_input = QLineEdit()
-        self.birthdate_input.setPlaceholderText("DD/MM/YYYY")
-        self.first_name_input.textChanged.connect(self.schedule_patient_identifier_reprocess)
-        self.last_name_input.textChanged.connect(self.schedule_patient_identifier_reprocess)
-        self.birthdate_input.textChanged.connect(self.schedule_patient_identifier_reprocess)
-        patient_form.addRow("First name", self.first_name_input)
-        patient_form.addRow("Last name", self.last_name_input)
-        patient_form.addRow("Birthdate", self.birthdate_input)
+        anonymization_group = QGroupBox("Anonymization")
+        anonymization_layout = QVBoxLayout(anonymization_group)
+        anonymization_layout.setSpacing(10)
+        self.anonymization_summary_label = QLabel()
+        self.anonymization_summary_label.setWordWrap(True)
+        self.anonymization_summary_label.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        summary_body = QWidget()
+        summary_body.setObjectName("anonymizationSummaryBody")
+        summary_body_layout = QVBoxLayout(summary_body)
+        summary_body_layout.setContentsMargins(0, 0, 0, 0)
+        summary_body_layout.setSpacing(0)
+        summary_body_layout.addWidget(self.anonymization_summary_label)
+        self.anonymization_summary_scroll = QScrollArea()
+        self.anonymization_summary_scroll.setObjectName("anonymizationSummaryScroll")
+        self.anonymization_summary_scroll.setWidgetResizable(True)
+        self.anonymization_summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.anonymization_summary_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.anonymization_summary_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.anonymization_summary_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.anonymization_summary_scroll.setFixedHeight(
+            self._anonymization_summary_height()
+        )
+        self.anonymization_summary_scroll.setWidget(summary_body)
+        self.customize_anonymization_button = QPushButton("Customize anonymization")
+        self.customize_anonymization_button.clicked.connect(
+            self.open_anonymization_dialog
+        )
+        anonymization_layout.addWidget(self.anonymization_summary_scroll)
+        anonymization_layout.addWidget(self.customize_anonymization_button)
 
         self.drop_area = DropArea()
-        self.drop_area.setMinimumHeight(110)
+        self.drop_area.setMinimumHeight(96)
+        self.drop_area.import_requested.connect(self.import_files)
         self.drop_area.files_dropped.connect(self.handle_dropped_paths)
         self.drop_area.text_dropped.connect(self.handle_dropped_text)
 
-        import_actions = QHBoxLayout()
-        self.import_button = QPushButton("Import Files")
-        self.import_button.clicked.connect(self.import_files)
-        import_actions.addWidget(self.import_button)
-        import_actions.addStretch(1)
-
-        paste_group = QGroupBox("Paste text")
-        paste_layout = QVBoxLayout(paste_group)
         self.paste_input = QPlainTextEdit()
-        self.paste_input.setPlaceholderText("Paste medical text here and add it as a document.")
-        self.paste_input.setMinimumHeight(140)
-        self.paste_input.textChanged.connect(self.refresh_actions)
-        self.add_paste_button = QPushButton("Add Pasted Text")
-        self.add_paste_button.clicked.connect(self.add_pasted_text_from_input)
-        paste_layout.addWidget(self.paste_input)
-        paste_layout.addWidget(self.add_paste_button)
+        self.paste_input.setPlaceholderText(
+            "Paste medical text here. It is processed automatically and can be copied."
+        )
+        self.paste_input.setMinimumHeight(112)
+        self.paste_input.textChanged.connect(self.handle_paste_input_changed)
 
-        self.document_list = QListWidget()
-        self.document_list.currentItemChanged.connect(self.handle_document_selection_changed)
-        self.document_list.setAlternatingRowColors(True)
+        self.document_list = DocumentListWidget()
+        self.document_list.setObjectName("documentList")
+        self.document_list.currentItemChanged.connect(
+            self.handle_document_selection_changed
+        )
+        self.document_list.remove_requested.connect(self.remove_document)
+        self.document_list.setAlternatingRowColors(False)
+        self.document_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.document_list.setMouseTracking(True)
+        self.document_list.setSpacing(0)
+        self.document_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.document_list_delegate = DocumentListItemDelegate(self.document_list)
+        self.document_list.setItemDelegate(self.document_list_delegate)
+        self.document_list_spinner_timer = QTimer(self)
+        self.document_list_spinner_timer.setInterval(80)
+        self.document_list_spinner_timer.timeout.connect(
+            self.document_list_delegate.advance_spinner
+        )
 
         document_actions = QHBoxLayout()
-        self.remove_button = QPushButton("Remove")
-        self.remove_button.clicked.connect(self.remove_selected_document)
+        document_actions.setContentsMargins(0, 0, 0, 0)
+        document_actions.setSpacing(12)
         self.clear_button = QPushButton("Clear All")
         self.clear_button.clicked.connect(self.clear_all_documents)
-        document_actions.addWidget(self.remove_button)
+        self.copy_button = QPushButton("Copy Output")
+        self.copy_button.clicked.connect(self.copy_output)
+        self.export_button = QToolButton()
+        self.export_button.setObjectName("exportButton")
+        self.export_button.setText("Export")
+        self.export_button.setMinimumWidth(168)
+        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.export_button.clicked.connect(
+            lambda checked=False: self.export_original_formats()
+        )
+        self.export_menu = QMenu(self.export_button)
+        self.export_button.setMenu(self.export_menu)
+        self.export_original_action = self.export_menu.addAction(
+            "Original formats (.pdf/.html/.txt)"
+        )
+        self.export_original_action.triggered.connect(
+            lambda checked=False: self.export_original_formats()
+        )
+        self.export_text_action = self.export_menu.addAction("Text files (.txt)")
+        self.export_text_action.triggered.connect(
+            lambda checked=False: self.export_text_files()
+        )
         document_actions.addWidget(self.clear_button)
+        document_actions.addWidget(self.copy_button)
+        document_actions.addWidget(self.export_button)
+        document_actions.addStretch(1)
 
-        left_layout.addWidget(patient_group)
+        left_layout.addWidget(anonymization_group)
         left_layout.addWidget(self.drop_area)
-        left_layout.addLayout(import_actions)
-        left_layout.addWidget(paste_group)
-        left_layout.addWidget(QLabel("Documents"))
+        left_layout.addWidget(QLabel("Paste text"))
+        left_layout.addWidget(self.paste_input)
+        left_layout.addWidget(QLabel("Imported files"))
         left_layout.addWidget(self.document_list, stretch=1)
         left_layout.addLayout(document_actions)
 
@@ -151,37 +665,125 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(14)
 
-        self.document_status_label = QLabel("No document selected.")
+        self.document_status_label = QLabel("Paste text or select an imported file.")
         self.document_status_label.setWordWrap(True)
         self.document_status_label.setObjectName("documentStatus")
 
-        self.output_view = QPlainTextEdit()
+        self.output_view = ScanningPlainTextEdit()
         self.output_view.setReadOnly(True)
         self.output_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.output_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        output_actions = QHBoxLayout()
-        self.copy_button = QPushButton("Copy Output")
-        self.copy_button.clicked.connect(self.copy_output)
-        self.export_button = QPushButton("Export ZIP")
-        self.export_button.clicked.connect(self.export_zip)
-        output_actions.addWidget(self.copy_button)
-        output_actions.addWidget(self.export_button)
-        output_actions.addStretch(1)
+        self.output_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         right_layout.addWidget(QLabel("Output"))
         right_layout.addWidget(self.document_status_label)
         right_layout.addWidget(self.output_view, stretch=1)
-        right_layout.addLayout(output_actions)
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([390, 770])
+        splitter.setSizes([420, 740])
 
         root_layout.addWidget(splitter, stretch=1)
         self.setCentralWidget(root)
+        self._build_status_bar()
+
+    def _build_status_bar(self) -> None:
+        status_bar = self.statusBar()
+        status_bar.setSizeGripEnabled(False)
+        status_bar.setContentsMargins(0, 0, 6, 0)
+
+        self.bug_report_link_button = QToolButton()
+        self.bug_report_link_button.setObjectName("bugReportLinkButton")
+        self.bug_report_link_button.setAutoRaise(True)
+        self.bug_report_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bug_report_link_button.setText("report a bug or incomplete anonimization")
+        self.bug_report_link_button.setIcon(bug_report_icon())
+        self.bug_report_link_button.setIconSize(QSize(12, 12))
+        self.bug_report_link_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.bug_report_link_button.clicked.connect(self.open_bug_report_form)
+        status_bar.addPermanentWidget(self.bug_report_link_button)
+        status_bar.setFixedHeight(max(20, self.bug_report_link_button.sizeHint().height() + 2))
+
+    def open_bug_report_form(self) -> None:
+        QDesktopServices.openUrl(QUrl(BUG_REPORT_FORM_URL))
+
+    def _anonymization_summary_height(self) -> int:
+        line_height = self.anonymization_summary_label.fontMetrics().lineSpacing()
+        return (line_height * ANONYMIZATION_SUMMARY_VISIBLE_LINES) + 8
+
+    def refresh_anonymization_summary(self) -> None:
+        settings = self.anonymization_settings
+        other_names_count = len(settings.other_names)
+        addresses_count = len(settings.custom_addresses)
+        self.anonymization_summary_label.setText(
+            "\n".join(
+                [
+                    f"Mode: {_format_mode_summary(settings, preview_document_key=self._preview_document_key())}",
+                    f"Patient: {_format_patient_summary(settings)}",
+                    f"People to hide: {other_names_count}",
+                    f"Addresses to hide: {addresses_count}",
+                    f"Export filenames: {_format_export_filename_summary(settings)}",
+                    f"General recognition: {_format_recognition_summary(settings)}",
+                ]
+            )
+        )
+        self.anonymization_summary_scroll.verticalScrollBar().setValue(0)
+
+    def open_anonymization_dialog(self) -> None:
+        dialog = AnonymizationDialog(
+            self.anonymization_settings,
+            preview_document_key=self._preview_document_key(),
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        self.apply_anonymization_settings(dialog.settings())
+
+    def _preview_document_key(self) -> str | None:
+        pasted_text = self.current_pasted_text()
+        if pasted_text:
+            return document_smart_key(
+                ImportedDocument(
+                    id="preview-paste",
+                    source_kind="paste",
+                    display_name="Pasted text",
+                    raw_text=pasted_text,
+                )
+            )
+
+        document = self.current_document()
+        if document is None:
+            return None
+
+        return document_smart_key(document)
+
+    def apply_anonymization_settings(
+        self,
+        anonymization_settings: AnonymizationSettings,
+        *,
+        persist: bool = True,
+        reprocess: bool = True,
+    ) -> None:
+        if anonymization_settings == self.anonymization_settings and persist:
+            return
+
+        self.anonymization_settings = anonymization_settings
+        self.refresh_anonymization_summary()
+
+        if persist:
+            save_anonymization_settings(anonymization_settings)
+
+        if reprocess:
+            self.schedule_anonymization_settings_reprocess()
+        else:
+            self.refresh_actions()
 
     def import_files(self) -> None:
         filenames, _ = QFileDialog.getOpenFileNames(
@@ -193,46 +795,56 @@ class MainWindow(QMainWindow):
         if filenames:
             self.handle_dropped_paths([Path(name) for name in filenames])
 
-    def add_pasted_text_from_input(self) -> None:
-        text = self.paste_input.toPlainText().strip()
-        if not text:
-            return
-        self.add_pasted_text(text)
-        self.paste_input.clear()
-
-    def add_pasted_text(self, text: str) -> ImportedDocument:
-        self._paste_counter += 1
-        document = ImportedDocument(
-            id=self._new_document_id(),
-            source_kind="paste",
-            display_name=f"Pasted Text {self._paste_counter:03d}",
-            raw_text=text.strip(),
-        )
-        self._append_documents([document])
-        return document
+    def set_pasted_text(self, text: str) -> None:
+        self.paste_input.setPlainText(text.strip())
 
     def handle_dropped_text(self, text: str) -> None:
-        self.add_pasted_text(text)
+        cleaned_text = text.strip()
+        if not cleaned_text:
+            return
+
+        self.set_pasted_text(cleaned_text)
+        self.statusBar().showMessage("Loaded pasted text.", 3000)
 
     def handle_dropped_paths(self, paths: list[Path]) -> None:
-        imported_documents = [self._import_or_error_document(path) for path in paths]
-        self._append_documents(imported_documents)
-
-    def _import_or_error_document(self, path: Path) -> ImportedDocument:
-        try:
-            return import_file(path, self._new_document_id())
-        except DocumentImportError as exc:
-            source_kind = "pdf" if path.suffix.lower() == ".pdf" else "text_file"
-            return ImportedDocument(
+        placeholder_documents = [
+            ImportedDocument(
                 id=self._new_document_id(),
-                source_kind=source_kind,
+                source_kind=_source_kind_for_path(path),
                 display_name=path.name,
                 path=path,
-                status="error",
-                error_message=str(exc),
+                status="processing",
             )
+            for path in paths
+        ]
+        self._append_documents(
+            placeholder_documents,
+            start_processing=False,
+            status_message=(
+                f"Importing {placeholder_documents[0].display_name}..."
+                if len(placeholder_documents) == 1
+                else f"Importing {len(placeholder_documents)} document(s)..."
+            ),
+        )
 
-    def _append_documents(self, documents: list[ImportedDocument]) -> None:
+        for document in placeholder_documents:
+            if document.path is None:
+                continue
+
+            worker = ImportDocumentRunnable(
+                ImportDocumentRequest(path=document.path, document_id=document.id)
+            )
+            worker.signals.completed.connect(self.on_import_completed)
+            self.active_import_workers[document.id] = worker
+            worker.start()
+
+    def _append_documents(
+        self,
+        documents: list[ImportedDocument],
+        *,
+        start_processing: bool = True,
+        status_message: str | None = None,
+    ) -> None:
         if not documents:
             return
 
@@ -241,11 +853,14 @@ class MainWindow(QMainWindow):
             document.id for document in documents if document.raw_text is not None
         )
         self.refresh_document_list(select_document_id=documents[-1].id)
-        if len(documents) == 1:
-            self.statusBar().showMessage(f"Loaded {documents[0].display_name}", 3000)
-        else:
-            self.statusBar().showMessage(f"Loaded {len(documents)} document(s).", 3000)
-        self.start_processing_if_possible()
+        if status_message is None:
+            if len(documents) == 1:
+                status_message = f"Loaded {documents[0].display_name}"
+            else:
+                status_message = f"Loaded {len(documents)} document(s)."
+        self.statusBar().showMessage(status_message, 3000 if len(documents) == 1 else 5000)
+        if start_processing:
+            self.start_processing_if_possible()
 
     def _new_document_id(self) -> str:
         return uuid4().hex
@@ -253,29 +868,58 @@ class MainWindow(QMainWindow):
     def handle_document_selection_changed(self) -> None:
         self.update_output_panel()
         self.refresh_actions()
+        self.refresh_anonymization_summary()
 
     def current_document(self) -> ImportedDocument | None:
         item = self.document_list.currentItem()
         if not item:
             return None
-        document_id = item.data(Qt.ItemDataRole.UserRole)
-        return next((document for document in self.documents if document.id == document_id), None)
+        document_id = item.data(DOCUMENT_ID_ROLE)
+        return self.document_by_id(document_id)
 
-    def build_patient_context(self) -> PatientContext:
-        try:
-            birthdate = parse_birthdate(self.birthdate_input.text())
-        except ProcessingError as exc:
-            raise exc
-
-        return PatientContext(
-            first_name=self.first_name_input.text().strip(),
-            last_name=self.last_name_input.text().strip(),
-            birthdate=birthdate,
+    def document_by_id(self, document_id: str) -> ImportedDocument | None:
+        return next(
+            (document for document in self.documents if document.id == document_id),
+            None,
         )
 
-    def schedule_patient_identifier_reprocess(self) -> None:
-        self.patient_context_generation += 1
-        self.patient_context_error_message = None
+    def on_import_completed(self, result: ImportDocumentResult) -> None:
+        document = result.document
+        self.active_import_workers.pop(document.id, None)
+
+        if self._closing:
+            return
+
+        existing_document = self.document_by_id(document.id)
+        if existing_document is None:
+            return
+
+        existing_document.source_kind = document.source_kind
+        existing_document.display_name = document.display_name
+        existing_document.path = document.path
+        existing_document.raw_text = document.raw_text
+        existing_document.pdf_pages = document.pdf_pages
+        existing_document.error_message = document.error_message
+
+        if document.raw_text is None:
+            existing_document.status = "error"
+            self.statusBar().showMessage(
+                f"Could not import {document.display_name}.",
+                5000,
+            )
+        else:
+            existing_document.status = "pending"
+            self.pending_document_ids.add(document.id)
+            self.statusBar().showMessage(
+                f"Imported {document.display_name}.",
+                3000,
+            )
+
+        self.refresh_document_list(preserve_selection=True)
+        self.start_processing_if_possible()
+
+    def schedule_anonymization_settings_reprocess(self) -> None:
+        self.anonymization_settings_generation += 1
         for document in self.documents:
             if document.raw_text is None:
                 continue
@@ -286,14 +930,18 @@ class MainWindow(QMainWindow):
 
         if self.documents:
             self.refresh_document_list(preserve_selection=True)
+            self.statusBar().showMessage(
+                "Anonymization settings updated. Reprocessing queued.",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage("Anonymization settings saved.", 3000)
 
-        self.patient_context_timer.start()
-
-    def handle_patient_identifiers_changed(self) -> None:
+        self.schedule_pasted_text_processing(debounce=False)
         self.start_processing_if_possible()
 
     def start_processing_if_possible(self) -> None:
-        if self.processing_active or self.patient_context_timer.isActive():
+        if self.processing_active:
             self.refresh_actions()
             return
 
@@ -306,47 +954,36 @@ class MainWindow(QMainWindow):
             self.refresh_actions()
             return
 
-        try:
-            patient_context = self.build_patient_context()
-        except ProcessingError as exc:
-            self.patient_context_error_message = str(exc)
-            self.statusBar().showMessage(f"Waiting for valid patient identifiers. {exc}", 5000)
-            self.refresh_document_list(preserve_selection=True)
-            self.refresh_actions()
-            return
-
-        self.patient_context_error_message = None
         for document in documents_to_process:
             document.status = "processing"
             document.error_message = None
             self.processed_documents.pop(document.id, None)
 
         request = ProcessBatchRequest(
-            patient_context=patient_context,
+            anonymization_settings=self.anonymization_settings,
             documents=documents_to_process,
-            context_generation=self.patient_context_generation,
+            context_generation=self.anonymization_settings_generation,
         )
         worker = BatchProcessorRunnable(request)
         worker.signals.completed.connect(self.on_batch_completed)
         worker.signals.failed.connect(self.on_batch_failed)
 
         self.processing_active = True
+        self.active_batch_worker = worker
         self.active_batch_document_ids = {document.id for document in documents_to_process}
         self.pending_document_ids.difference_update(self.active_batch_document_ids)
-        self.refresh_document_list()
+        self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
         self.statusBar().showMessage(f"Processing {len(documents_to_process)} document(s)...")
-        self.thread_pool.start(worker)
+        worker.start()
 
     def on_batch_completed(self, result: BatchProcessingResult) -> None:
         self.processing_active = False
+        self.active_batch_worker = None
         self.active_batch_document_ids.clear()
 
         documents_by_id = {document.id: document for document in self.documents}
-        batch_is_current = (
-            result.context_generation == self.patient_context_generation
-            and not self.patient_context_timer.isActive()
-        )
+        batch_is_current = result.context_generation == self.anonymization_settings_generation
 
         if batch_is_current:
             for document_id in result.document_ids:
@@ -356,7 +993,9 @@ class MainWindow(QMainWindow):
                 if document_id in result.processed_documents:
                     document.status = "ready"
                     document.error_message = None
-                    self.processed_documents[document_id] = result.processed_documents[document_id]
+                    self.processed_documents[document_id] = result.processed_documents[
+                        document_id
+                    ]
                 elif document_id in result.errors:
                     document.status = "error"
                     document.error_message = result.errors[document_id]
@@ -377,25 +1016,47 @@ class MainWindow(QMainWindow):
                 self.processed_documents.pop(document_id, None)
 
             if self.pending_document_ids:
-                self.statusBar().showMessage("Patient identifiers changed. Reprocessing queued.", 5000)
+                self.statusBar().showMessage(
+                    "Anonymization settings changed. Reprocessing queued.",
+                    5000,
+                )
 
         self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
         self.start_processing_if_possible()
 
-    def on_batch_failed(self, message: str) -> None:
+    def on_batch_failed(self, failure: BatchProcessingFailure) -> None:
         self.processing_active = False
+        self.active_batch_worker = None
+        batch_is_current = (
+            failure.context_generation == self.anonymization_settings_generation
+        )
+
         for document in self.documents:
             if document.id not in self.active_batch_document_ids:
                 continue
-            document.status = "error"
-            document.error_message = message
+            if batch_is_current:
+                document.status = "error"
+                document.error_message = failure.message
+            else:
+                document.status = "pending"
+                document.error_message = None
+                self.pending_document_ids.add(document.id)
             self.processed_documents.pop(document.id, None)
         self.active_batch_document_ids.clear()
-        self.statusBar().showMessage("Processing failed.", 5000)
-        QMessageBox.critical(self, "Processing failed", message)
+
+        if batch_is_current:
+            self.statusBar().showMessage("Processing failed.", 5000)
+            QMessageBox.critical(self, "Processing failed", failure.message)
+        elif self.pending_document_ids:
+            self.statusBar().showMessage(
+                "Anonymization settings changed. Reprocessing queued.",
+                5000,
+            )
+
         self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
+        self.start_processing_if_possible()
 
     def refresh_document_list(
         self,
@@ -404,96 +1065,238 @@ class MainWindow(QMainWindow):
     ) -> None:
         selected_id = None
         if preserve_selection and self.document_list.currentItem():
-            selected_id = self.document_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            selected_id = self.document_list.currentItem().data(DOCUMENT_ID_ROLE)
         if select_document_id:
             selected_id = select_document_id
 
         self.document_list.clear()
         for document in self.documents:
-            item = QListWidgetItem(f"{document.display_name}  ·  {STATUS_LABELS[document.status]}")
-            item.setData(Qt.ItemDataRole.UserRole, document.id)
-            item.setForeground(STATUS_COLORS[document.status])
-            if document.status == "error" and document.error_message:
-                item.setToolTip(document.error_message)
+            item = QListWidgetItem(document.display_name)
+            item.setData(DOCUMENT_ID_ROLE, document.id)
+            item.setData(DOCUMENT_STATUS_ROLE, document.status)
+            item.setData(DOCUMENT_SOURCE_KIND_ROLE, document.source_kind)
+            item.setData(DOCUMENT_ERROR_ROLE, document.error_message or "")
+            item.setToolTip(self._document_tooltip(document))
             self.document_list.addItem(item)
+        self._update_document_list_animation()
 
+        selection_applied = False
         if selected_id:
             for row in range(self.document_list.count()):
                 item = self.document_list.item(row)
-                if item.data(Qt.ItemDataRole.UserRole) == selected_id:
+                if item.data(DOCUMENT_ID_ROLE) == selected_id:
                     self.document_list.setCurrentRow(row)
+                    selection_applied = True
                     break
-        elif self.document_list.count() > 0:
+
+        if not selection_applied and self.document_list.count() > 0:
             self.document_list.setCurrentRow(0)
 
         self.update_output_panel()
         self.refresh_actions()
 
+    def _document_tooltip(self, document: ImportedDocument) -> str:
+        if document.error_message:
+            return document.error_message
+        if document.status == "processing" and document.raw_text is None:
+            return "Importing"
+        return STATUS_LABELS[document.status]
+
+    def _update_document_list_animation(self) -> None:
+        has_processing_documents = any(
+            document.status == "processing" for document in self.documents
+        )
+        if has_processing_documents:
+            if not self.document_list_spinner_timer.isActive():
+                self.document_list_spinner_timer.start()
+            return
+
+        if self.document_list_spinner_timer.isActive():
+            self.document_list_spinner_timer.stop()
+
+    def _set_document_status(self, text: str, *, tooltip: str = "") -> None:
+        self.document_status_label.setText(text)
+        self.document_status_label.setToolTip(tooltip)
+
+    def _placeholder_help_tooltip(
+        self, placeholder_references: dict[str, tuple[str, ...]]
+    ) -> str:
+        if not placeholder_references:
+            return ""
+        return (
+            "Blue highlights mark pseudonyms, amber highlights mark placeholders. "
+            "Hover a highlight to see the original text."
+        )
+
+    def _warnings_text(self, warnings: list[str]) -> str:
+        if not warnings:
+            return ""
+        label = "Warning" if len(warnings) == 1 else "Warnings"
+        return f"{label}: {'; '.join(warnings)}"
+
     def update_output_panel(self) -> None:
+        pasted_text = self.current_pasted_text()
+        if pasted_text:
+            self._update_pasted_text_output(pasted_text)
+            return
+
         document = self.current_document()
         if not document:
-            self.document_status_label.setText("No document selected.")
+            self._set_document_status("Paste text or select an imported file.")
+            self.output_view.set_processing_active(False)
+            self.output_view.set_placeholder_references({})
             self.output_view.clear()
+            return
+
+        if document.status == "processing" and document.raw_text is None:
+            self.output_view.setPlaceholderText("")
+            self.output_view.clear()
+            self.output_view.set_placeholder_references({})
+            self.output_view.set_processing_active(True)
+            self._set_document_status(f"{document.display_name} is importing.")
             return
 
         processed = self.processed_documents.get(document.id)
         if processed:
+            self.output_view.set_processing_active(False)
+            self.output_view.set_placeholder_references(
+                processed.placeholder_references
+            )
             self.output_view.setPlainText(processed.output_text)
-            warning_text = f" Warnings: {'; '.join(processed.warnings)}" if processed.warnings else ""
-            self.document_status_label.setText(
-                f"{document.display_name} is ready for copy/export.{warning_text}"
+            warnings_text = self._warnings_text(processed.warnings)
+            status_text = (
+                f"{document.display_name}. {warnings_text}"
+                if warnings_text
+                else document.display_name
+            )
+            self._set_document_status(
+                status_text,
+                tooltip=self._placeholder_help_tooltip(
+                    processed.placeholder_references
+                ),
             )
             return
 
         if document.status == "error":
+            self.output_view.set_processing_active(False)
+            self.output_view.set_placeholder_references({})
             self.output_view.setPlainText(document.raw_text or "")
-            self.document_status_label.setText(
-                f"{document.display_name} could not be processed. {document.error_message or ''}".strip()
-            )
+            error_message = document.error_message or "Could not be processed."
+            self._set_document_status(f"{document.display_name}: {error_message}")
             return
 
         self.output_view.setPlainText(document.raw_text or "")
+        self.output_view.set_placeholder_references({})
         if document.status == "processing":
-            self.document_status_label.setText(f"{document.display_name} is currently processing.")
+            self.output_view.set_processing_active(True)
+            self._set_document_status(f"{document.display_name} is processing.")
         else:
-            if self.patient_context_error_message:
-                self.document_status_label.setText(
-                    f"{document.display_name} is waiting for valid patient identifiers. "
-                    f"{self.patient_context_error_message}"
-                )
-            else:
-                self.document_status_label.setText(
-                    f"{document.display_name} is queued for automatic de-identification. "
-                    "The source text is shown here."
-                )
+            self.output_view.set_processing_active(False)
+            self._set_document_status(document.display_name)
+
+    def _update_pasted_text_output(self, pasted_text: str) -> None:
+        processed = self.paste_processed_document
+        if processed:
+            self.output_view.set_processing_active(False)
+            self.output_view.set_placeholder_references(
+                processed.placeholder_references
+            )
+            self.output_view.setPlainText(processed.output_text)
+            warnings_text = self._warnings_text(processed.warnings)
+            status_text = (
+                f"Pasted text. {warnings_text}" if warnings_text else "Pasted text"
+            )
+            self._set_document_status(
+                status_text,
+                tooltip=self._placeholder_help_tooltip(
+                    processed.placeholder_references
+                ),
+            )
+            return
+
+        self.output_view.setPlainText(pasted_text)
+        self.output_view.set_placeholder_references({})
+
+        if self.paste_error_message:
+            self.output_view.set_processing_active(False)
+            self._set_document_status(
+                f"Pasted text: {self.paste_error_message}".strip()
+            )
+            return
+
+        if self.paste_processing_active:
+            self.output_view.set_processing_active(True)
+            self._set_document_status("Pasted text is processing.")
+            return
+
+        self.output_view.set_processing_active(False)
+        self._set_document_status("Pasted text")
 
     def copy_output(self) -> None:
+        pasted_text = self.current_pasted_text()
         document = self.current_document()
-        if not document:
-            return
-        processed = self.processed_documents.get(document.id)
+        processed = (
+            self.paste_processed_document
+            if pasted_text
+            else (
+                self.processed_documents.get(document.id)
+                if document is not None
+                else None
+            )
+        )
         if not processed:
             return
-        QApplication.clipboard().setText(processed.output_text)
-        self.statusBar().showMessage(f"Copied output for {document.display_name}.", 3000)
 
-    def export_zip(self) -> None:
+        QApplication.clipboard().setText(processed.output_text)
+        source_label = "pasted text" if pasted_text else document.display_name
+        self.statusBar().showMessage(f"Copied output for {source_label}.", 3000)
+
+    def export_original_formats(self) -> None:
+        self.export_zip("original_formats")
+
+    def export_text_files(self) -> None:
+        self.export_zip("text_files")
+
+    def export_zip(self, export_mode: ExportMode = "original_formats") -> None:
         if not self.processed_documents:
-            QMessageBox.warning(self, "Nothing to export", "Process at least one document before exporting.")
+            QMessageBox.warning(
+                self,
+                "Nothing to export",
+                "Process at least one document before exporting.",
+            )
             return
 
+        mode_label = (
+            "Original formats"
+            if export_mode == "original_formats"
+            else "Text files"
+        )
+        default_filename = (
+            "open-anonymizer-original-export.zip"
+            if export_mode == "original_formats"
+            else "open-anonymizer-text-export.zip"
+        )
+        suggested_path = self.export_directory() / default_filename
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Export ZIP",
-            "open-anonymizer-export.zip",
+            f"Export ZIP ({mode_label})",
+            str(suggested_path),
             "ZIP archive (*.zip)",
         )
         if not filename:
             return
 
-        result = export_processed_documents(self.documents, self.processed_documents, Path(filename))
+        export_path = Path(filename).expanduser()
+        result = export_processed_documents(
+            self.documents,
+            self.processed_documents,
+            export_path,
+            export_mode=export_mode,
+            anonymization_settings=self.anonymization_settings,
+        )
+        self.save_export_directory(export_path.parent)
         self.statusBar().showMessage(
-            f"Exported {result.exported_count} document(s) to {result.zip_path.name}.",
+            f"Exported {result.exported_count} document(s) as {mode_label.lower()} to {result.zip_path.name}.",
             5000,
         )
         QMessageBox.information(
@@ -501,15 +1304,42 @@ class MainWindow(QMainWindow):
             "Export complete",
             (
                 f"ZIP saved to:\n{result.zip_path}\n\n"
+                f"Mode: {mode_label}\n"
                 f"Exported: {result.exported_count}\n"
                 f"Skipped: {result.skipped_count}"
             ),
         )
 
+    def export_directory(self) -> Path:
+        settings = main_window_qsettings()
+        raw_value = settings.value(EXPORT_DIRECTORY_SETTINGS_KEY, "", str) or ""
+        saved_path = Path(raw_value).expanduser() if raw_value.strip() else None
+        if saved_path is not None and saved_path.exists() and saved_path.is_dir():
+            return saved_path
+        return default_export_directory()
+
+    def save_export_directory(self, directory: Path) -> None:
+        settings = main_window_qsettings()
+        settings.setValue(EXPORT_DIRECTORY_SETTINGS_KEY, str(directory))
+        settings.sync()
+
     def remove_selected_document(self) -> None:
         document = self.current_document()
         if not document:
             return
+        self.remove_document(document.id)
+
+    def remove_document(self, document_id: str) -> None:
+        if self.processing_active:
+            return
+
+        document = self.document_by_id(document_id)
+        if not document:
+            return
+
+        worker = self.active_import_workers.pop(document.id, None)
+        if worker is not None:
+            worker.cancel()
         self.documents = [item for item in self.documents if item.id != document.id]
         self.pending_document_ids.discard(document.id)
         self.active_batch_document_ids.discard(document.id)
@@ -519,24 +1349,138 @@ class MainWindow(QMainWindow):
     def clear_all_documents(self) -> None:
         if self.processing_active:
             return
+        for worker in self.active_import_workers.values():
+            worker.cancel()
+        self.active_import_workers.clear()
         self.documents.clear()
         self.pending_document_ids.clear()
         self.active_batch_document_ids.clear()
         self.processed_documents.clear()
-        self.patient_context_error_message = None
-        self.patient_context_timer.stop()
         self.refresh_document_list()
         self.statusBar().clearMessage()
 
+    def current_pasted_text(self) -> str:
+        return self.paste_input.toPlainText().strip()
+
+    def handle_paste_input_changed(self) -> None:
+        self.schedule_pasted_text_processing(debounce=True)
+
+    def schedule_pasted_text_processing(self, *, debounce: bool) -> None:
+        self.paste_processing_timer.stop()
+        if self.paste_processing_worker is not None:
+            self.paste_processing_worker.cancel()
+            self.paste_processing_worker = None
+        self.paste_processing_generation += 1
+        self.paste_processed_document = None
+        self.paste_error_message = None
+        self.paste_processing_active = False
+
+        if not self.current_pasted_text():
+            self.update_output_panel()
+            self.refresh_actions()
+            self.refresh_anonymization_summary()
+            return
+
+        if debounce:
+            self.paste_processing_timer.start()
+        else:
+            self.process_pasted_text()
+
+        self.update_output_panel()
+        self.refresh_actions()
+        self.refresh_anonymization_summary()
+
+    def process_pasted_text(self) -> None:
+        pasted_text = self.current_pasted_text()
+        if not pasted_text:
+            return
+
+        generation = self.paste_processing_generation
+        request = ProcessBatchRequest(
+            anonymization_settings=self.anonymization_settings,
+            documents=[
+                ImportedDocument(
+                    id=f"paste-preview-{generation}",
+                    source_kind="paste",
+                    display_name="Pasted text",
+                    raw_text=pasted_text,
+                )
+            ],
+            context_generation=generation,
+        )
+        worker = BatchProcessorRunnable(request)
+        worker.signals.completed.connect(self.on_paste_processing_completed)
+        worker.signals.failed.connect(self.on_paste_processing_failed)
+
+        self.paste_processing_active = True
+        self.paste_processing_worker = worker
+        self.update_output_panel()
+        self.refresh_actions()
+        worker.start()
+
+    def on_paste_processing_completed(self, result: BatchProcessingResult) -> None:
+        if result.context_generation != self.paste_processing_generation:
+            return
+
+        self.paste_processing_worker = None
+        self.paste_processing_active = False
+        self.paste_error_message = next(iter(result.errors.values()), None)
+        self.paste_processed_document = next(
+            iter(result.processed_documents.values()),
+            None,
+        )
+        self.update_output_panel()
+        self.refresh_actions()
+
+    def on_paste_processing_failed(self, failure: BatchProcessingFailure) -> None:
+        if failure.context_generation != self.paste_processing_generation:
+            return
+
+        self.paste_processing_worker = None
+        self.paste_processing_active = False
+        self.paste_processed_document = None
+        self.paste_error_message = failure.message
+        self.update_output_panel()
+        self.refresh_actions()
+
     def refresh_actions(self) -> None:
         has_documents = bool(self.documents)
+        has_pasted_text = bool(self.current_pasted_text())
+        has_active_imports = bool(self.active_import_workers)
         current_document = self.current_document()
-        has_processed_current = bool(
-            current_document and self.processed_documents.get(current_document.id)
+        active_processed_document = (
+            self.paste_processed_document
+            if has_pasted_text
+            else (
+                self.processed_documents.get(current_document.id)
+                if current_document is not None
+                else None
+            )
         )
 
-        self.add_paste_button.setEnabled(bool(self.paste_input.toPlainText().strip()))
-        self.remove_button.setEnabled(current_document is not None and not self.processing_active)
+        self.document_list.set_remove_enabled(not self.processing_active)
         self.clear_button.setEnabled(has_documents and not self.processing_active)
-        self.copy_button.setEnabled(has_processed_current)
-        self.export_button.setEnabled(bool(self.processed_documents) and not self.processing_active)
+        self.copy_button.setEnabled(active_processed_document is not None)
+        export_enabled = (
+            bool(self.processed_documents)
+            and not self.processing_active
+            and not has_active_imports
+            and not has_pasted_text
+        )
+        self.export_button.setEnabled(export_enabled)
+        self.export_original_action.setEnabled(export_enabled)
+        self.export_text_action.setEnabled(export_enabled)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._closing = True
+        self.paste_processing_timer.stop()
+        if self.active_batch_worker is not None:
+            self.active_batch_worker.cancel()
+            self.active_batch_worker = None
+        if self.paste_processing_worker is not None:
+            self.paste_processing_worker.cancel()
+            self.paste_processing_worker = None
+        for worker in self.active_import_workers.values():
+            worker.cancel()
+        self.active_import_workers.clear()
+        super().closeEvent(event)

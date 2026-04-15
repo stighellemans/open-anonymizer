@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "open-anonymizer"
 version = "0.1.0"
-description = "A local desktop app for de-identifying medical text with Deduced."
+description = "A local desktop app for de-identifying medical text with belgian-deduce."
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = { text = "MIT" }
@@ -16,7 +16,7 @@ dependencies = [
   "PySide6>=6.6,<6.8",
   "pypdf>=5.7,<6",
   "pypdfium2>=4.30,<5",
-  "deduce @ git+https://github.com/aenglebert/deduced.git@master",
+  "belgian-deduce @ git+https://github.com/stighellemans/belgian-deduce.git@de945522313a2b437cee5e0418a330d7de8368a2",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +34,9 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"open_anonymizer.assets" = ["*.svg", "*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
 
+from open_anonymizer.services import importer as importer_module
 from open_anonymizer.services.importer import (
     DocumentImportError,
     UnsupportedPdfError,
@@ -32,7 +34,7 @@ def test_import_file_reads_html_documents_as_text(tmp_path: Path) -> None:
 
     document = import_file(file_path, "doc-1")
 
-    assert document.source_kind == "text_file"
+    assert document.source_kind == "html"
     assert document.display_name == "sample.html"
     assert document.path == file_path
     assert document.raw_text == "<p>Résumé clinique</p>"
@@ -43,6 +45,11 @@ def test_extract_pdf_text_reads_text_based_pdf(tmp_path: Path) -> None:
     write_text_pdf(file_path, "Bonjour clinique")
 
     assert "Bonjour clinique" in extract_pdf_text(file_path)
+
+    document = import_file(file_path, "doc-2")
+    assert document.source_kind == "pdf"
+    assert len(document.pdf_pages) == 1
+    assert document.pdf_pages[0].text == "Bonjour clinique"
 
 
 def test_extract_pdf_text_recovers_spaces_for_positioned_words(tmp_path: Path) -> None:
@@ -68,6 +75,36 @@ def test_extract_pdf_text_uses_whitespace_fallback_candidate(tmp_path: Path) -> 
         "ET\n"
     ).encode("latin-1")
     write_pdf_stream(file_path, stream)
+
+    assert extract_pdf_text(file_path) == "Bonjour clinique"
+
+
+def test_extract_pdf_text_falls_back_when_pdfium_text_extraction_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    file_path = tmp_path / "pdfium-lookup-error.pdf"
+    write_text_pdf(file_path, "Bonjour clinique")
+
+    class FakePdfiumDocument:
+        def __init__(self, _path: str) -> None:
+            pass
+
+        def __len__(self) -> int:
+            return 1
+
+        def close(self) -> None:
+            pass
+
+    def raise_lookup_error(_document: object, _page_index: int) -> str:
+        raise LookupError("unknown encoding: utf-16-le")
+
+    monkeypatch.setattr(
+        importer_module,
+        "pdfium",
+        SimpleNamespace(PdfDocument=FakePdfiumDocument),
+    )
+    monkeypatch.setattr(importer_module, "_extract_pdfium_page_text", raise_lookup_error)
 
     assert extract_pdf_text(file_path) == "Bonjour clinique"
 

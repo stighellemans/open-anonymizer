@@ -1,6 +1,5 @@
 from .deidentifier import (
     ProcessingError,
-    apply_guaranteed_cleanup,
     build_birthdate_variants,
     deidentify_document,
     parse_birthdate,
@@ -12,7 +11,6 @@ __all__ = [
     "DocumentImportError",
     "ProcessingError",
     "UnsupportedPdfError",
-    "apply_guaranteed_cleanup",
     "build_birthdate_variants",
     "deidentify_document",
     "export_processed_documents",
@@ -20,4 +18,3 @@ __all__ = [
     "parse_birthdate",
     "sanitize_stem",
 ]
-

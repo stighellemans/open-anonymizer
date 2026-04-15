@@ -9,6 +9,8 @@ __pycache__/
 build/
 dist/
 release/
+tmpbuild/
+tmpdist/
 vendor/tesseract_runtime/*
 !vendor/tesseract_runtime/README.md
 *.egg-info/

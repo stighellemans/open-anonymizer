@@ -1,12 +1,7 @@
-name: Release
+name: Package Artifacts
 
 on:
-  push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
   build:
@@ -47,22 +42,9 @@ jobs:
         if: runner.os == 'Windows'
         run: python scripts/build_windows_installer.py
 
-      - name: Upload build artifact
+      - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
+          name: packaged-${{ runner.os }}
           path: release/*
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-artifacts/**/*
+          if-no-files-found: error

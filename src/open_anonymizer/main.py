@@ -4,6 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from open_anonymizer.branding import application_icon
 from open_anonymizer.ui import MainWindow
 
 APP_STYLESHEET = """
@@ -20,7 +21,7 @@ QGroupBox {
     border: 1px solid #d6d0c8;
     border-radius: 12px;
     margin-top: 10px;
-    padding: 16px 14px 14px 14px;
+    padding: 14px 12px 12px 12px;
     background: #fbfaf8;
 }
 QGroupBox::title {
@@ -32,38 +33,128 @@ QPlainTextEdit, QListWidget, QLineEdit {
     background: #fffdf9;
     border: 1px solid #d6d0c8;
     border-radius: 10px;
-    padding: 8px;
+    padding: 7px;
     selection-background-color: #d3e4dc;
 }
-QPushButton {
+QListWidget#documentList {
+    background: #f8f3ec;
+    border: 1px solid #d8cfc4;
+    border-radius: 14px;
+    padding: 6px;
+    outline: 0;
+}
+QListWidget#documentList::item {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+QListWidget#documentList::item:selected {
+    background: transparent;
+}
+QPushButton, QToolButton {
     background: #1f4d45;
     color: #ffffff;
     border: none;
     border-radius: 10px;
-    padding: 10px 14px;
+    padding: 8px 14px;
     min-height: 18px;
 }
-QPushButton:disabled {
+QPushButton#secondaryButton, QToolButton#secondaryButton {
+    background: #fffdf9;
+    color: #1f4d45;
+    border: 1px solid #c8beb2;
+}
+QPushButton#secondaryButton:hover:!disabled, QToolButton#secondaryButton:hover:!disabled {
+    background: #f6efe6;
+}
+QPushButton:disabled, QToolButton:disabled {
     background: #a7b0ae;
     color: #eef2f1;
 }
-QPushButton:hover:!disabled {
+QPushButton:hover:!disabled, QToolButton:hover:!disabled {
     background: #163b35;
 }
+QToolButton#exportButton {
+    min-width: 122px;
+    padding: 8px 30px 8px 14px;
+}
+QToolButton#exportButton::menu-button {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border-left: 1px solid rgba(255, 255, 255, 0.18);
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+QToolButton#exportButton::menu-arrow {
+    width: 8px;
+    height: 8px;
+}
+QMenu {
+    background: #fffdf9;
+    border: 1px solid #d6d0c8;
+    border-radius: 12px;
+    padding: 8px;
+}
+QMenu::item {
+    border-radius: 8px;
+    padding: 8px 14px;
+    margin: 2px 0;
+}
+QMenu::item:selected {
+    background: #dbeafe;
+    color: #173f7a;
+}
 QLabel#windowTitle {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
 }
 QLabel#windowSubtitle {
     color: #52606d;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
+}
+QLabel#headerIcon {
+    background: #fffdf9;
+    border: 1px solid #d6d0c8;
+    border-radius: 18px;
+    padding: 10px;
 }
 QLabel#documentStatus {
     color: #52606d;
 }
+QStatusBar {
+    background: #f6f3ef;
+    color: #52606d;
+    padding: 0;
+}
+QStatusBar::item {
+    border: none;
+}
+QToolButton#bugReportLinkButton {
+    background: transparent;
+    color: #1f4d45;
+    border: none;
+    font-size: 11px;
+    padding: 0;
+    margin: 0 2px 0 6px;
+}
+QToolButton#bugReportLinkButton:hover:!disabled {
+    background: transparent;
+    color: #163b35;
+}
+QToolButton#bugReportLinkButton:pressed {
+    background: transparent;
+}
+QScrollArea#anonymizationSummaryScroll {
+    border: none;
+    background: transparent;
+}
+QWidget#anonymizationSummaryBody {
+    background: transparent;
+}
 QFrame#dropArea {
     border: 2px dashed #b7afa4;
-    border-radius: 16px;
+    border-radius: 14px;
     background: #fdfbf7;
 }
 QFrame#dropArea[dragActive="true"] {
@@ -78,7 +169,15 @@ def main() -> int:
     app.setApplicationName("Open Anonymizer")
     app.setOrganizationName("Open Anonymizer")
     app.setStyleSheet(APP_STYLESHEET)
+    app.setWindowIcon(application_icon())
 
     window = MainWindow()
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        from open_anonymizer.services.deduce_backend import (
+            release_backend_resources,
+        )
+
+        release_backend_resources()
