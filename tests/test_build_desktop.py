@@ -36,6 +36,47 @@ def test_build_pyinstaller_args_adds_custom_hooks_and_qt_exclusions(monkeypatch)
         if value == "--exclude-module"
     }
     assert excluded_modules == set(build_desktop.DEFAULT_EXCLUDED_PYSIDE6_MODULES)
+    assert "belgian_deduce" not in {
+        pyinstaller_args[index + 1]
+        for index, value in enumerate(pyinstaller_args)
+        if value == "--collect-data"
+    }
+
+
+def test_collect_package_data_args_skips_nested_lookup_cache(monkeypatch) -> None:
+    build_desktop = _load_build_desktop_module()
+    monkeypatch.setattr(
+        build_desktop,
+        "collect_data_files",
+        lambda package_name: [
+            (
+                "/tmp/site-packages/belgian_deduce/base_config.json",
+                "belgian_deduce",
+            ),
+            (
+                "/tmp/site-packages/belgian_deduce/data/lookup/cache/lookup_structs.pickle",
+                "belgian_deduce/data/lookup/cache",
+            ),
+            (
+                "/tmp/site-packages/belgian_deduce/data/lookup/cache/cache/lookup_structs.pickle",
+                "belgian_deduce/data/lookup/cache/cache",
+            ),
+        ],
+    )
+
+    args = build_desktop._collect_package_data_args(
+        "belgian_deduce",
+        excluded_fragments=(build_desktop.NESTED_LOOKUP_CACHE_FRAGMENT,),
+    )
+
+    assert args == [
+        "--add-data",
+        "/tmp/site-packages/belgian_deduce/base_config.json"
+        f"{build_desktop.os.pathsep}belgian_deduce",
+        "--add-data",
+        "/tmp/site-packages/belgian_deduce/data/lookup/cache/lookup_structs.pickle"
+        f"{build_desktop.os.pathsep}belgian_deduce/data/lookup/cache",
+    ]
 
 
 def test_build_pyinstaller_args_adds_macos_options_only_on_macos(monkeypatch, tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from open_anonymizer.ui import MainWindow
 
 
 WINDOWS_APP_ID = "com.openanonymizer.app"
+STARTUP_BACKEND_WARMUP_DELAY_MS = 0
 
 APP_STYLESHEET = """
 QWidget {
@@ -184,7 +185,9 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
-    window.start_background_backend_warmup()
+    window.schedule_background_backend_warmup(
+        STARTUP_BACKEND_WARMUP_DELAY_MS,
+    )
     try:
         return app.exec()
     finally:

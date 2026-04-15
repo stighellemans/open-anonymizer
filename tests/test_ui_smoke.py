@@ -5,20 +5,21 @@ import time
 from zipfile import ZipFile
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QToolButton
+from PySide6.QtWidgets import QLabel, QPushButton, QToolButton
 
 from open_anonymizer.models import (
     AnonymizationSettings,
     ImportedDocument,
     ProcessedDocument,
-    RecognitionFlags,
 )
 from open_anonymizer.services.importer import ImportCancelledError
 from open_anonymizer.ui.anonymization_dialog import save_anonymization_settings
 from open_anonymizer.ui.main_window import (
     DOCUMENT_ID_ROLE,
     MainWindow,
+    PREPARING_BACKEND_TEXT,
     STATUS_COLORS,
+    layout_profile_for_window_height,
     recommended_window_size,
 )
 
@@ -74,43 +75,24 @@ def test_recommended_window_size_stays_within_available_screen() -> None:
     assert size.height() > 0
 
 
-def test_main_window_uses_scrollable_left_panel_and_compact_customize_button(qtbot) -> None:
+def test_main_window_compacts_fixed_sections_for_smaller_screens(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(
+        MainWindow,
+        "_recommended_window_size",
+        lambda self: QSize(852, 532),
+    )
+
     window = MainWindow()
     qtbot.addWidget(window)
+    layout_profile = layout_profile_for_window_height(532)
 
-    left_panel_scroll_area = window.findChild(QScrollArea, "leftPanelScrollArea")
-
-    assert left_panel_scroll_area is not None
-    assert (
-        left_panel_scroll_area.horizontalScrollBarPolicy()
-        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    )
+    assert window.findChild(QLabel, "anonymizationSummaryBody") is None
+    assert window.drop_area.minimumHeight() == layout_profile.drop_area_height
+    assert window.paste_input.minimumHeight() == layout_profile.paste_input_height
     assert (
         window.customize_anonymization_button.sizePolicy().horizontalPolicy()
         == window.customize_anonymization_button.sizePolicy().Policy.Maximum
     )
-
-
-def test_main_window_can_enable_background_backend_warmup(qtbot, monkeypatch) -> None:
-    scheduled: list[object] = []
-
-    window = MainWindow()
-    qtbot.addWidget(window)
-
-    monkeypatch.setattr(
-        "open_anonymizer.ui.main_window.QTimer.singleShot",
-        lambda interval, callback: (scheduled.append(interval), callback()),
-    )
-    monkeypatch.setattr(
-        window,
-        "schedule_backend_warmup",
-        lambda: scheduled.append("scheduled"),
-    )
-
-    window.start_background_backend_warmup()
-
-    assert window._background_backend_warmup_enabled is True
-    assert scheduled == [0, "scheduled"]
 
 
 def test_main_window_shows_bug_report_link(qtbot, monkeypatch) -> None:
@@ -530,43 +512,8 @@ def test_main_window_applies_dialog_settings(qtbot, monkeypatch) -> None:
     assert window.anonymization_settings.first_name == "Ada"
     assert window.anonymization_settings.mode == "smart_pseudonyms"
     assert window.anonymization_settings.deidentify_filenames is False
-    assert "Ada Lovelace" in window.anonymization_summary_label.text()
-    assert "Mode: Smart placeholders" in window.anonymization_summary_label.text()
-    assert "Export filenames: Original names" in window.anonymization_summary_label.text()
-    assert "People to hide: 1" in window.anonymization_summary_label.text()
-
-
-def test_main_window_keeps_anonymization_summary_scrollable_when_it_overflows(qtbot) -> None:
-    window = MainWindow()
-    qtbot.addWidget(window)
-    window.show()
-
-    window.apply_anonymization_settings(
-        AnonymizationSettings(
-            recognition_flags=RecognitionFlags(
-                names=False,
-                locations=False,
-                institutions=False,
-                dates=False,
-                ages=False,
-                identifiers=False,
-                phone_numbers=False,
-                email_addresses=False,
-                urls=False,
-            )
-        ),
-        persist=False,
-        reprocess=False,
-    )
-
-    summary_scroll = window.anonymization_summary_scroll
-    qtbot.waitUntil(
-        lambda: summary_scroll.verticalScrollBar().maximum() > 0,
-        timeout=3000,
-    )
-
-    assert summary_scroll.verticalScrollBar().maximum() > 0
-    assert summary_scroll.widget().sizeHint().height() > summary_scroll.viewport().height()
+    assert window.customize_anonymization_button.text() == "Customize anonymization"
+    assert window.findChild(QLabel, "anonymizationSummaryBody") is None
 
 
 def test_main_window_cancel_keeps_existing_settings(qtbot, monkeypatch) -> None:
@@ -589,7 +536,7 @@ def test_main_window_cancel_keeps_existing_settings(qtbot, monkeypatch) -> None:
     assert window.anonymization_settings_generation == original_generation
 
 
-def test_main_window_shows_session_auto_date_shift_in_summary_for_pasted_text(qtbot, monkeypatch) -> None:
+def test_main_window_keeps_customize_button_available_for_pasted_text(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         "open_anonymizer.services.smart_pseudonymizer._session_auto_date_shift_days",
         lambda: 98,
@@ -604,9 +551,12 @@ def test_main_window_shows_session_auto_date_shift_in_summary_for_pasted_text(qt
     )
 
     window.set_pasted_text("Example medical note")
-    qtbot.waitUntil(lambda: "auto: +98 days" in window.anonymization_summary_label.text(), timeout=3000)
+    qtbot.waitUntil(
+        lambda: window.current_pasted_text() == "Example medical note",
+        timeout=3000,
+    )
 
-    assert "auto per file" not in window.anonymization_summary_label.text()
+    assert window.customize_anonymization_button.text() == "Customize anonymization"
 
 
 def test_main_window_auto_processes_new_documents_and_reprocesses_after_settings_change(
@@ -732,6 +682,89 @@ def test_main_window_queues_paste_reprocessing_while_worker_is_active(qtbot, mon
     assert window._paste_processing_restart_debounce is False
 
 
+def test_main_window_shows_preparing_message_for_pasted_text_while_backend_initializes(
+    qtbot,
+    monkeypatch,
+) -> None:
+    class FakeWorker:
+        def cancel(self) -> None:
+            return
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.backend_is_ready",
+        lambda flags_key: False,
+    )
+
+    window.set_pasted_text("Source text")
+    window.paste_processing_timer.stop()
+    window.paste_processing_active = True
+    window.paste_processing_worker = FakeWorker()
+    window._active_paste_processing_flags_key = window.current_backend_flags_key()
+    window._set_expected_backend_preparation(window.current_backend_flags_key())
+    window.update_output_panel()
+
+    assert window.output_view.toPlainText() == PREPARING_BACKEND_TEXT
+    assert window.output_view.is_processing_active() is True
+    assert window.document_status_label.text().startswith(PREPARING_BACKEND_TEXT)
+
+
+def test_main_window_starts_background_warmup_while_imports_are_active(
+    qtbot,
+    monkeypatch,
+) -> None:
+    class FakeImportWorker:
+        def cancel(self) -> None:
+            return
+
+    class FakeSignal:
+        def connect(self, callback) -> None:
+            self.callback = callback
+
+    class FakeSignals:
+        def __init__(self) -> None:
+            self.completed = FakeSignal()
+            self.failed = FakeSignal()
+
+    class FakeWarmupWorker:
+        def __init__(self) -> None:
+            self.signals = FakeSignals()
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def cancel(self) -> None:
+            return
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.backend_is_ready",
+        lambda flags_key: False,
+    )
+
+    created_workers: list[FakeWarmupWorker] = []
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.BackendWarmupRunnable",
+        lambda *args, **kwargs: created_workers.append(FakeWarmupWorker())
+        or created_workers[-1],
+    )
+
+    window.schedule_background_backend_warmup(25)
+    window.active_import_workers["importing-doc"] = FakeImportWorker()
+    window.start_background_backend_warmup()
+
+    assert len(created_workers) == 1
+    assert created_workers[0].started is True
+    assert window.backend_warmup_worker is created_workers[0]
+    window.backend_warmup_start_timer.stop()
+
+
 def test_main_window_selects_newly_imported_file_after_import(
     tmp_path: Path,
     qtbot,
@@ -853,6 +886,89 @@ def test_main_window_shows_busy_placeholder_while_file_import_runs(
     assert document.raw_text == "Source text"
 
 
+def test_main_window_queues_large_import_batches_without_processing_mid_import(
+    tmp_path: Path,
+    qtbot,
+    monkeypatch,
+) -> None:
+    file_paths = [
+        tmp_path / "first.txt",
+        tmp_path / "second.txt",
+        tmp_path / "third.txt",
+    ]
+    for index, file_path in enumerate(file_paths, start=1):
+        file_path.write_text(f"Source text {index}", encoding="utf-8")
+
+    started: list[str] = []
+    deidentify_calls: list[str] = []
+    start_events = {file_path.name: threading.Event() for file_path in file_paths}
+    release_events = {file_path.name: threading.Event() for file_path in file_paths}
+
+    def fake_import_file(path, document_id, should_cancel=None):
+        started.append(path.name)
+        start_events[path.name].set()
+        while not release_events[path.name].wait(timeout=0.01):
+            if should_cancel is not None and should_cancel():
+                raise ImportCancelledError()
+        return ImportedDocument(
+            id=document_id,
+            source_kind="text_file",
+            display_name=path.name,
+            path=path,
+            raw_text=path.read_text(encoding="utf-8"),
+        )
+
+    def fake_deidentify(document, settings):
+        del settings
+        deidentify_calls.append(document.display_name)
+        return ProcessedDocument(
+            document_id=document.id,
+            output_text=document.raw_text or "",
+        )
+
+    monkeypatch.setattr("open_anonymizer.services.workers.import_file", fake_import_file)
+    monkeypatch.setattr("open_anonymizer.services.workers.deidentify_document", fake_deidentify)
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.configured_max_concurrent_imports",
+        lambda: 1,
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.handle_dropped_paths(file_paths)
+
+    qtbot.waitUntil(start_events["first.txt"].is_set, timeout=1000)
+    assert started == ["first.txt"]
+    assert start_events["second.txt"].wait(timeout=0.2) is False
+    assert start_events["third.txt"].wait(timeout=0.2) is False
+
+    release_events["first.txt"].set()
+    qtbot.waitUntil(start_events["second.txt"].is_set, timeout=1000)
+    qtbot.wait(100)
+    assert started == ["first.txt", "second.txt"]
+    assert deidentify_calls == []
+    assert start_events["third.txt"].wait(timeout=0.2) is False
+
+    release_events["second.txt"].set()
+    qtbot.waitUntil(start_events["third.txt"].is_set, timeout=1000)
+    qtbot.wait(100)
+    assert started == ["first.txt", "second.txt", "third.txt"]
+    assert deidentify_calls == []
+
+    release_events["third.txt"].set()
+    qtbot.waitUntil(
+        lambda: len(deidentify_calls) == 3
+        and all(document.status == "ready" for document in window.documents),
+        timeout=3000,
+    )
+    assert [document.display_name for document in window.documents] == [
+        "first.txt",
+        "second.txt",
+        "third.txt",
+    ]
+
+
 def test_main_window_close_cancels_background_import_without_waiting(
     tmp_path: Path,
     qtbot,
@@ -913,6 +1029,4 @@ def test_main_window_restores_saved_settings(qtbot) -> None:
         deidentify_filenames=False,
         mode="smart_pseudonyms",
     )
-    assert "Mode: Smart placeholders" in window.anonymization_summary_label.text()
-    assert "Export filenames: Original names" in window.anonymization_summary_label.text()
-    assert "Jean Dupont, 12/03/1980" in window.anonymization_summary_label.text()
+    assert window.customize_anonymization_button.text() == "Customize anonymization"

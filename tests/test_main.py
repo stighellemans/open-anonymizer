@@ -5,6 +5,7 @@ from open_anonymizer import main as main_module
 
 def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
     events: list[str] = []
+    scheduled: list[int] = []
 
     class FakeApplication:
         def __init__(self, argv):
@@ -32,8 +33,8 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
         def show(self) -> None:
             events.append("show")
 
-        def start_background_backend_warmup(self) -> None:
-            events.append("warmup")
+        def schedule_background_backend_warmup(self, delay: int) -> None:
+            scheduled.append(delay)
 
     monkeypatch.setattr(main_module, "QApplication", FakeApplication)
     monkeypatch.setattr(main_module, "MainWindow", FakeWindow)
@@ -46,6 +47,6 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
     result = main_module.main()
 
     assert result == 17
-    assert "warmup" in events
-    assert events.index("warmup") < events.index("exec")
+    assert events.index("show") < events.index("exec")
+    assert scheduled == [main_module.STARTUP_BACKEND_WARMUP_DELAY_MS]
     assert events[-1] == "cleanup"

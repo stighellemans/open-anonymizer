@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import PyInstaller.__main__
+from PyInstaller.utils.hooks import collect_data_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,7 @@ DEFAULT_EXCLUDED_PYSIDE6_MODULES = (
     "PySide6.QtQuick",
     "PySide6.QtVirtualKeyboard",
 )
+NESTED_LOOKUP_CACHE_FRAGMENT = "data/lookup/cache/cache"
 
 
 def _pyinstaller_mapping(source: Path, destination: Path) -> str:
@@ -61,6 +63,40 @@ def _collect_tesseract_runtime_args(runtime_dir: Path) -> list[str]:
         destination = Path(BUNDLED_TESSERACT_DIRNAME) / relative_parent
         option = "--add-binary" if _is_runtime_binary(source) else "--add-data"
         args.extend([option, _pyinstaller_mapping(source, destination)])
+    return args
+
+
+def _collect_package_data_args(
+    package_name: str,
+    *,
+    excluded_fragments: tuple[str, ...] = (),
+) -> list[str]:
+    args: list[str] = []
+    normalized_exclusions = tuple(
+        fragment.replace("\\", "/").strip("/")
+        for fragment in excluded_fragments
+    )
+
+    for source, destination in collect_data_files(package_name):
+        normalized_source = source.replace("\\", "/")
+        normalized_destination = destination.replace("\\", "/")
+        if any(
+            fragment
+            and (
+                fragment in normalized_source
+                or fragment in normalized_destination
+            )
+            for fragment in normalized_exclusions
+        ):
+            continue
+
+        args.extend(
+            [
+                "--add-data",
+                _pyinstaller_mapping(Path(source), Path(destination)),
+            ]
+        )
+
     return args
 
 
@@ -188,8 +224,10 @@ def build_pyinstaller_args(args: argparse.Namespace) -> list[str]:
         str(CUSTOM_HOOKS_DIR),
         "--collect-data",
         "open_anonymizer",
-        "--collect-data",
-        "belgian_deduce",
+        *_collect_package_data_args(
+            "belgian_deduce",
+            excluded_fragments=(NESTED_LOOKUP_CACHE_FRAGMENT,),
+        ),
         "--copy-metadata",
         "belgian-deduce",
         "--copy-metadata",

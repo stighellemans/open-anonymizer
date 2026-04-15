@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
+import os
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
@@ -9,8 +13,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
-    QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -22,7 +24,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
-    QScrollArea,
     QStyledItemDelegate,
     QStyle,
     QToolButton,
@@ -36,13 +37,11 @@ from open_anonymizer.models import (
     ExportMode,
     ImportedDocument,
     ProcessBatchRequest,
+    ProcessedDocument,
 )
+from open_anonymizer.services.deduce_backend import backend_is_ready
 from open_anonymizer.services.deidentifier import document_smart_key
 from open_anonymizer.services.exporter import export_processed_documents
-from open_anonymizer.services.smart_pseudonymizer import (
-    effective_date_shift_days,
-    format_date_shift_days,
-)
 from open_anonymizer.services.workers import (
     BatchProcessingFailure,
     BatchProcessingResult,
@@ -57,8 +56,6 @@ from open_anonymizer.services.workers import (
 )
 from open_anonymizer.ui.anonymization_dialog import (
     AnonymizationDialog,
-    MODE_LABELS,
-    RECOGNITION_LABELS,
     load_saved_anonymization_settings,
     save_anonymization_settings,
 )
@@ -85,11 +82,79 @@ DOCUMENT_ERROR_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 SETTINGS_ORGANIZATION = "Open Anonymizer"
 SETTINGS_APPLICATION = "Open Anonymizer"
 EXPORT_DIRECTORY_SETTINGS_KEY = "export/last_directory"
-ANONYMIZATION_SUMMARY_VISIBLE_LINES = 6
 BUG_REPORT_FORM_URL = "https://forms.gle/Ww8d6JajzAsbpxH38"
 DEFAULT_WINDOW_SIZE = QSize(1160, 664)
 MINIMUM_WINDOW_SIZE = QSize(840, 520)
 WINDOW_SCREEN_MARGIN = 48
+PREPARING_BACKEND_TEXT = "Preparing anonymizer engine…"
+PREPARING_BACKEND_BADGE_TEXT = "Preparing"
+SCANNING_BADGE_TEXT = "Scanning"
+DEFAULT_MAX_CONCURRENT_IMPORTS = 1
+
+
+@dataclass(frozen=True)
+class WindowLayoutProfile:
+    root_margins: tuple[int, int, int, int]
+    root_spacing: int
+    header_spacing: int
+    title_spacing: int
+    left_panel_spacing: int
+    document_action_spacing: int
+    right_panel_spacing: int
+    header_icon_size: int
+    header_icon_pixmap_size: int
+    drop_area_height: int
+    paste_input_height: int
+    export_button_min_width: int
+
+
+def layout_profile_for_window_height(window_height: int) -> WindowLayoutProfile:
+    if window_height <= 560:
+        return WindowLayoutProfile(
+            root_margins=(12, 12, 12, 6),
+            root_spacing=8,
+            header_spacing=12,
+            title_spacing=1,
+            left_panel_spacing=10,
+            document_action_spacing=8,
+            right_panel_spacing=10,
+            header_icon_size=56,
+            header_icon_pixmap_size=36,
+            drop_area_height=80,
+            paste_input_height=92,
+            export_button_min_width=152,
+        )
+
+    if window_height <= 680:
+        return WindowLayoutProfile(
+            root_margins=(14, 14, 14, 6),
+            root_spacing=8,
+            header_spacing=14,
+            title_spacing=1,
+            left_panel_spacing=10,
+            document_action_spacing=10,
+            right_panel_spacing=12,
+            header_icon_size=60,
+            header_icon_pixmap_size=40,
+            drop_area_height=88,
+            paste_input_height=100,
+            export_button_min_width=160,
+        )
+
+    return WindowLayoutProfile(
+        root_margins=(16, 16, 16, 8),
+        root_spacing=10,
+        header_spacing=16,
+        title_spacing=2,
+        left_panel_spacing=12,
+        document_action_spacing=12,
+        right_panel_spacing=14,
+        header_icon_size=68,
+        header_icon_pixmap_size=48,
+        drop_area_height=96,
+        paste_input_height=112,
+        export_button_min_width=168,
+    )
 
 
 def recommended_window_size(available_size: QSize) -> QSize:
@@ -101,70 +166,6 @@ def recommended_window_size(available_size: QSize) -> QSize:
         fit_dimension(DEFAULT_WINDOW_SIZE.width(), MINIMUM_WINDOW_SIZE.width(), available_size.width()),
         fit_dimension(DEFAULT_WINDOW_SIZE.height(), MINIMUM_WINDOW_SIZE.height(), available_size.height()),
     )
-
-
-def _format_patient_summary(anonymization_settings: AnonymizationSettings) -> str:
-    patient_bits: list[str] = []
-    full_name = " ".join(
-        bit
-        for bit in [
-            anonymization_settings.first_name,
-            anonymization_settings.last_name,
-        ]
-        if bit
-    ).strip()
-
-    if full_name:
-        patient_bits.append(full_name)
-
-    if anonymization_settings.birthdate:
-        patient_bits.append(
-            anonymization_settings.birthdate.strftime("%d/%m/%Y")
-        )
-
-    return ", ".join(patient_bits) if patient_bits else "None configured"
-
-
-def _format_recognition_summary(anonymization_settings: AnonymizationSettings) -> str:
-    disabled = [
-        RECOGNITION_LABELS[name].lower()
-        for name in RECOGNITION_LABELS
-        if not getattr(anonymization_settings.recognition_flags, name)
-    ]
-    if not disabled:
-        return "All categories enabled"
-    return f"Disabled: {', '.join(disabled)}"
-
-
-def _format_mode_summary(
-    anonymization_settings: AnonymizationSettings,
-    *,
-    preview_document_key: str | None = None,
-) -> str:
-    del preview_document_key
-    mode_label = MODE_LABELS.get(
-        anonymization_settings.mode,
-        MODE_LABELS["placeholders"],
-    )
-    if anonymization_settings.mode != "smart_pseudonyms":
-        return mode_label
-
-    date_shift_days = anonymization_settings.date_shift_days
-    if date_shift_days is None:
-        auto_shift_days, _ = effective_date_shift_days(
-            anonymization_settings,
-        )
-        if auto_shift_days is not None:
-            return f"{mode_label} (auto: {format_date_shift_days(auto_shift_days)})"
-        return f"{mode_label} (auto)"
-
-    return f"{mode_label} ({format_date_shift_days(date_shift_days)})"
-
-
-def _format_export_filename_summary(anonymization_settings: AnonymizationSettings) -> str:
-    if anonymization_settings.deidentify_filenames:
-        return "De-identified"
-    return "Original names"
 
 
 def main_window_qsettings() -> QSettings:
@@ -199,6 +200,17 @@ def _source_kind_for_path(path: Path) -> str:
     if suffix in {".html", ".htm"}:
         return "html"
     return "text_file"
+
+
+def configured_max_concurrent_imports() -> int:
+    raw_value = os.getenv(
+        "OPEN_ANONYMIZER_MAX_CONCURRENT_IMPORTS",
+        str(DEFAULT_MAX_CONCURRENT_IMPORTS),
+    ).strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENT_IMPORTS
 
 
 class DocumentListItemDelegate(QStyledItemDelegate):
@@ -497,52 +509,68 @@ class MainWindow(QMainWindow):
         self.active_batch_document_ids: set[str] = set()
         self.active_batch_worker: BatchProcessorRunnable | None = None
         self.active_import_workers: dict[str, ImportDocumentRunnable] = {}
+        self.queued_import_requests: deque[ImportDocumentRequest] = deque()
         self.anonymization_settings_generation = 0
         self.anonymization_settings = load_saved_anonymization_settings()
         self.paste_processed_document: ProcessedDocument | None = None
         self.paste_error_message: str | None = None
         self.paste_processing_active = False
         self.paste_processing_worker: BatchProcessorRunnable | None = None
+        self._active_paste_processing_flags_key: tuple[bool, ...] | None = None
         self.paste_processing_generation = 0
         self._paste_processing_restart_requested = False
         self._paste_processing_restart_debounce = False
         self._background_backend_warmup_enabled = False
+        self._background_backend_warmup_delay_ms = 0
         self.backend_warmup_worker: BackendWarmupRunnable | None = None
         self._active_backend_warmup_flags_key: tuple[bool, ...] | None = None
         self._queued_backend_warmup_flags_key: tuple[bool, ...] | None = None
-        self._warmed_backend_flags_key: tuple[bool, ...] | None = None
+        self._expected_backend_preparation_flags_key: tuple[bool, ...] | None = None
+        self._backend_preparation_started_at: float | None = None
+        self._active_batch_flags_key: tuple[bool, ...] | None = None
         self._closing = False
         self.paste_processing_timer = QTimer(self)
         self.paste_processing_timer.setSingleShot(True)
         self.paste_processing_timer.setInterval(250)
         self.paste_processing_timer.timeout.connect(self.process_pasted_text)
+        self.backend_status_timer = QTimer(self)
+        self.backend_status_timer.setInterval(75)
+        self.backend_status_timer.timeout.connect(
+            self._refresh_backend_preparation_state
+        )
+        self.backend_warmup_start_timer = QTimer(self)
+        self.backend_warmup_start_timer.setSingleShot(True)
+        self.backend_warmup_start_timer.timeout.connect(
+            self.start_background_backend_warmup
+        )
 
         self.setWindowTitle("Open Anonymizer")
         self.setWindowIcon(application_icon())
         initial_size = self._recommended_window_size()
+        self._layout_profile = layout_profile_for_window_height(initial_size.height())
         self.resize(initial_size)
         self.setMinimumSize(
             min(MINIMUM_WINDOW_SIZE.width(), initial_size.width()),
             min(MINIMUM_WINDOW_SIZE.height(), initial_size.height()),
         )
         self._build_ui()
-        self.refresh_anonymization_summary()
         self.refresh_document_list()
         self.refresh_actions()
 
     def _build_ui(self) -> None:
+        layout_profile = self._layout_profile
         root = QWidget()
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(16, 16, 16, 8)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(*layout_profile.root_margins)
+        root_layout.setSpacing(layout_profile.root_spacing)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(16)
+        header_layout.setSpacing(layout_profile.header_spacing)
 
         title_layout = QVBoxLayout()
         title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(2)
+        title_layout.setSpacing(layout_profile.title_spacing)
 
         title = QLabel("Open Anonymizer")
         title.setObjectName("windowTitle")
@@ -556,9 +584,19 @@ class MainWindow(QMainWindow):
 
         self.header_icon_label = QLabel()
         self.header_icon_label.setObjectName("headerIcon")
-        self.header_icon_label.setFixedSize(68, 68)
+        self.header_icon_label.setFixedSize(
+            layout_profile.header_icon_size,
+            layout_profile.header_icon_size,
+        )
         self.header_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.header_icon_label.setPixmap(self.windowIcon().pixmap(QSize(48, 48)))
+        self.header_icon_label.setPixmap(
+            self.windowIcon().pixmap(
+                QSize(
+                    layout_profile.header_icon_pixmap_size,
+                    layout_profile.header_icon_pixmap_size,
+                )
+            )
+        )
 
         header_layout.addWidget(
             self.header_icon_label,
@@ -579,40 +617,8 @@ class MainWindow(QMainWindow):
         )
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
+        left_layout.setSpacing(layout_profile.left_panel_spacing)
 
-        anonymization_group = QGroupBox("Anonymization")
-        anonymization_layout = QVBoxLayout(anonymization_group)
-        anonymization_layout.setSpacing(10)
-        self.anonymization_summary_label = QLabel()
-        self.anonymization_summary_label.setWordWrap(True)
-        self.anonymization_summary_label.setAlignment(
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-        )
-        summary_body = QWidget()
-        summary_body.setObjectName("anonymizationSummaryBody")
-        summary_body_layout = QVBoxLayout(summary_body)
-        summary_body_layout.setContentsMargins(0, 0, 0, 0)
-        summary_body_layout.setSpacing(0)
-        summary_body_layout.addWidget(self.anonymization_summary_label)
-        self.anonymization_summary_scroll = QScrollArea()
-        self.anonymization_summary_scroll.setObjectName("anonymizationSummaryScroll")
-        self.anonymization_summary_scroll.setWidgetResizable(True)
-        self.anonymization_summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.anonymization_summary_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.anonymization_summary_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.anonymization_summary_scroll.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.anonymization_summary_scroll.setFixedHeight(
-            self._anonymization_summary_height()
-        )
-        self.anonymization_summary_scroll.setWidget(summary_body)
         self.customize_anonymization_button = QPushButton("Customize anonymization")
         self.customize_anonymization_button.setSizePolicy(
             QSizePolicy.Policy.Maximum,
@@ -621,15 +627,14 @@ class MainWindow(QMainWindow):
         self.customize_anonymization_button.clicked.connect(
             self.open_anonymization_dialog
         )
-        anonymization_layout.addWidget(self.anonymization_summary_scroll)
-        anonymization_layout.addWidget(
+        left_layout.addWidget(
             self.customize_anonymization_button,
             0,
             Qt.AlignmentFlag.AlignLeft,
         )
 
         self.drop_area = DropArea()
-        self.drop_area.setMinimumHeight(96)
+        self.drop_area.setFixedHeight(layout_profile.drop_area_height)
         self.drop_area.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
@@ -642,7 +647,7 @@ class MainWindow(QMainWindow):
         self.paste_input.setPlaceholderText(
             "Paste medical text here. It is processed automatically and can be copied."
         )
-        self.paste_input.setMinimumHeight(112)
+        self.paste_input.setFixedHeight(layout_profile.paste_input_height)
         self.paste_input.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
@@ -664,6 +669,11 @@ class MainWindow(QMainWindow):
         self.document_list.setVerticalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
+        self.document_list.setMinimumHeight(0)
+        self.document_list.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
         self.document_list_delegate = DocumentListItemDelegate(self.document_list)
         self.document_list.setItemDelegate(self.document_list_delegate)
         self.document_list_spinner_timer = QTimer(self)
@@ -674,7 +684,7 @@ class MainWindow(QMainWindow):
 
         document_actions = QHBoxLayout()
         document_actions.setContentsMargins(0, 0, 0, 0)
-        document_actions.setSpacing(12)
+        document_actions.setSpacing(layout_profile.document_action_spacing)
         self.clear_button = QPushButton("Clear All")
         self.clear_button.clicked.connect(self.clear_all_documents)
         self.copy_button = QPushButton("Copy Output")
@@ -682,7 +692,7 @@ class MainWindow(QMainWindow):
         self.export_button = QToolButton()
         self.export_button.setObjectName("exportButton")
         self.export_button.setText("Export")
-        self.export_button.setMinimumWidth(168)
+        self.export_button.setMinimumWidth(layout_profile.export_button_min_width)
         self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.export_button.clicked.connect(
             lambda checked=False: self.export_original_formats()
@@ -704,7 +714,6 @@ class MainWindow(QMainWindow):
         document_actions.addWidget(self.export_button)
         document_actions.addStretch(1)
 
-        left_layout.addWidget(anonymization_group)
         left_layout.addWidget(self.drop_area)
         left_layout.addWidget(QLabel("Paste text"))
         left_layout.addWidget(self.paste_input)
@@ -712,18 +721,9 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.document_list, stretch=1)
         left_layout.addLayout(document_actions)
 
-        left_scroll_area = QScrollArea()
-        left_scroll_area.setObjectName("leftPanelScrollArea")
-        left_scroll_area.setWidgetResizable(True)
-        left_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        left_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        left_scroll_area.setWidget(left_panel)
-
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setSpacing(14)
+        right_layout.setSpacing(layout_profile.right_panel_spacing)
 
         self.document_status_label = QLabel("Paste text or select an imported file.")
         self.document_status_label.setWordWrap(True)
@@ -736,12 +736,13 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
+        self.output_view.setMinimumHeight(0)
 
         right_layout.addWidget(QLabel("Output"))
         right_layout.addWidget(self.document_status_label)
         right_layout.addWidget(self.output_view, stretch=1)
 
-        splitter.addWidget(left_scroll_area)
+        splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -781,28 +782,6 @@ class MainWindow(QMainWindow):
     def open_bug_report_form(self) -> None:
         QDesktopServices.openUrl(QUrl(BUG_REPORT_FORM_URL))
 
-    def _anonymization_summary_height(self) -> int:
-        line_height = self.anonymization_summary_label.fontMetrics().lineSpacing()
-        return (line_height * ANONYMIZATION_SUMMARY_VISIBLE_LINES) + 8
-
-    def refresh_anonymization_summary(self) -> None:
-        settings = self.anonymization_settings
-        other_names_count = len(settings.other_names)
-        addresses_count = len(settings.custom_addresses)
-        self.anonymization_summary_label.setText(
-            "\n".join(
-                [
-                    f"Mode: {_format_mode_summary(settings, preview_document_key=self._preview_document_key())}",
-                    f"Patient: {_format_patient_summary(settings)}",
-                    f"People to hide: {other_names_count}",
-                    f"Addresses to hide: {addresses_count}",
-                    f"Export filenames: {_format_export_filename_summary(settings)}",
-                    f"General recognition: {_format_recognition_summary(settings)}",
-                ]
-            )
-        )
-        self.anonymization_summary_scroll.verticalScrollBar().setValue(0)
-
     def open_anonymization_dialog(self) -> None:
         dialog = AnonymizationDialog(
             self.anonymization_settings,
@@ -832,24 +811,71 @@ class MainWindow(QMainWindow):
 
         return document_smart_key(document)
 
-    def start_background_backend_warmup(self) -> None:
-        if self._background_backend_warmup_enabled:
+    def current_backend_flags_key(self) -> tuple[bool, ...]:
+        return self.anonymization_settings.recognition_flags.as_key()
+
+    def schedule_background_backend_warmup(self, delay_ms: int | None = None) -> None:
+        if self._closing:
             return
 
         self._background_backend_warmup_enabled = True
-        QTimer.singleShot(0, self.schedule_backend_warmup)
+        if delay_ms is not None:
+            self._background_backend_warmup_delay_ms = max(0, delay_ms)
 
-    def schedule_backend_warmup(self) -> None:
+        flags_key = self.current_backend_flags_key()
+        if backend_is_ready(flags_key):
+            self.backend_warmup_start_timer.stop()
+            self._clear_expected_backend_preparation(flags_key)
+            self.update_output_panel()
+            self.refresh_actions()
+            return
+
+        if self.backend_warmup_worker is not None:
+            if self._active_backend_warmup_flags_key != flags_key:
+                self._queued_backend_warmup_flags_key = flags_key
+            return
+
+        self.backend_warmup_start_timer.start(self._background_backend_warmup_delay_ms)
+
+    def enable_background_backend_warmup(self) -> None:
+        self.schedule_background_backend_warmup()
+
+    def defer_background_backend_warmup(self) -> None:
         if not self._background_backend_warmup_enabled or self._closing:
             return
 
-        flags_key = self.anonymization_settings.recognition_flags.as_key()
-        if self._warmed_backend_flags_key == flags_key:
+        self.backend_warmup_start_timer.stop()
+        self.schedule_background_backend_warmup()
+
+    def _background_warmup_can_start(self) -> bool:
+        return (
+            not self.processing_active
+            and not self.paste_processing_active
+            and self.paste_processing_worker is None
+            and not self.paste_processing_timer.isActive()
+        )
+
+    def start_background_backend_warmup(self) -> None:
+        if not self._background_backend_warmup_enabled or self._closing:
+            return
+
+        self.backend_warmup_start_timer.stop()
+        if not self._background_warmup_can_start():
+            self.schedule_background_backend_warmup()
+            return
+
+        flags_key = self.current_backend_flags_key()
+        if backend_is_ready(flags_key):
+            self._clear_expected_backend_preparation(flags_key)
+            self.update_output_panel()
+            self.refresh_actions()
             return
 
         if self.backend_warmup_worker is not None:
             if self._active_backend_warmup_flags_key == flags_key:
+                self._set_expected_backend_preparation(flags_key)
                 return
+
             self._queued_backend_warmup_flags_key = flags_key
             return
 
@@ -863,34 +889,151 @@ class MainWindow(QMainWindow):
         worker.signals.failed.connect(self.on_backend_warmup_failed)
         self.backend_warmup_worker = worker
         self._active_backend_warmup_flags_key = flags_key
+        self._set_expected_backend_preparation(flags_key)
         worker.start()
 
     def on_backend_warmup_completed(self, result: BackendWarmupResult) -> None:
         self.backend_warmup_worker = None
         self._active_backend_warmup_flags_key = None
-        self._warmed_backend_flags_key = result.flags_key
+        self._clear_expected_backend_preparation(result.flags_key)
+
         queued_flags_key = self._queued_backend_warmup_flags_key
         self._queued_backend_warmup_flags_key = None
-
         if (
             queued_flags_key is not None
-            and queued_flags_key != result.flags_key
-            and queued_flags_key == self.anonymization_settings.recognition_flags.as_key()
+            and queued_flags_key == self.current_backend_flags_key()
+            and not backend_is_ready(queued_flags_key)
         ):
-            self.schedule_backend_warmup()
+            self.schedule_background_backend_warmup()
+            return
+
+        self.update_output_panel()
+        self.refresh_actions()
 
     def on_backend_warmup_failed(self, failure: BackendWarmupFailure) -> None:
         self.backend_warmup_worker = None
         self._active_backend_warmup_flags_key = None
+        self._clear_expected_backend_preparation(failure.flags_key)
+
         queued_flags_key = self._queued_backend_warmup_flags_key
         self._queued_backend_warmup_flags_key = None
-
         if (
             queued_flags_key is not None
-            and queued_flags_key != failure.flags_key
-            and queued_flags_key == self.anonymization_settings.recognition_flags.as_key()
+            and queued_flags_key == self.current_backend_flags_key()
+            and not backend_is_ready(queued_flags_key)
         ):
-            self.schedule_backend_warmup()
+            self.schedule_background_backend_warmup()
+            return
+
+        self.statusBar().showMessage(
+            "Preparing anonymizer engine failed. It will retry on the next run.",
+            5000,
+        )
+        self.update_output_panel()
+        self.refresh_actions()
+
+    def _set_expected_backend_preparation(self, flags_key: tuple[bool, ...]) -> None:
+        if self._expected_backend_preparation_flags_key == flags_key:
+            if self._backend_preparation_started_at is None:
+                self._backend_preparation_started_at = monotonic()
+            if not self.backend_status_timer.isActive():
+                self.backend_status_timer.start()
+            return
+
+        self._expected_backend_preparation_flags_key = flags_key
+        self._backend_preparation_started_at = monotonic()
+        if not self.backend_status_timer.isActive():
+            self.backend_status_timer.start()
+        self.update_output_panel()
+        self.refresh_actions()
+
+    def _clear_expected_backend_preparation(
+        self,
+        flags_key: tuple[bool, ...] | None = None,
+    ) -> None:
+        if (
+            flags_key is not None
+            and self._expected_backend_preparation_flags_key != flags_key
+        ):
+            return
+
+        self._expected_backend_preparation_flags_key = None
+        self._backend_preparation_started_at = None
+        self.backend_status_timer.stop()
+
+    def _backend_preparation_in_flight(self, flags_key: tuple[bool, ...]) -> bool:
+        if self._active_backend_warmup_flags_key == flags_key:
+            return True
+        if (
+            self.processing_active
+            and self.active_batch_worker is not None
+            and self._active_batch_flags_key == flags_key
+        ):
+            return True
+        if (
+            self.paste_processing_worker is not None
+            and self._active_paste_processing_flags_key == flags_key
+        ):
+            return True
+        return False
+
+    def _is_backend_preparation_pending(self) -> bool:
+        flags_key = self.current_backend_flags_key()
+        if backend_is_ready(flags_key):
+            return False
+        if self._expected_backend_preparation_flags_key != flags_key:
+            return False
+        return self._backend_preparation_in_flight(flags_key)
+
+    def _refresh_backend_preparation_state(self) -> None:
+        flags_key = self._expected_backend_preparation_flags_key
+        if flags_key is None:
+            self.backend_status_timer.stop()
+            return
+
+        current_flags_key = self.current_backend_flags_key()
+        if flags_key != current_flags_key:
+            self._clear_expected_backend_preparation(flags_key)
+            self.update_output_panel()
+            self.refresh_actions()
+            return
+
+        if backend_is_ready(current_flags_key):
+            self._clear_expected_backend_preparation(current_flags_key)
+            self.update_output_panel()
+            self.refresh_actions()
+            return
+
+        if not self._backend_preparation_in_flight(current_flags_key):
+            self._clear_expected_backend_preparation(current_flags_key)
+            self.update_output_panel()
+            self.refresh_actions()
+            return
+
+        self.update_output_panel()
+
+    def _set_output_processing_state(self, active: bool, *, badge_text: str) -> None:
+        self.output_view.set_processing_badge_text(badge_text)
+        self.output_view.set_processing_active(active)
+
+    def _backend_preparation_elapsed_text(self) -> str:
+        started_at = self._backend_preparation_started_at
+        if started_at is None:
+            return "0.0s"
+        return f"{max(0.0, monotonic() - started_at):.1f}s"
+
+    def _show_backend_preparing_output(self) -> None:
+        self.output_view.setPlaceholderText("")
+        self.output_view.set_placeholder_references({})
+        elapsed_text = self._backend_preparation_elapsed_text()
+        self.output_view.setPlainText(PREPARING_BACKEND_TEXT)
+        self._set_output_processing_state(
+            True,
+            badge_text=PREPARING_BACKEND_BADGE_TEXT,
+        )
+        self._set_document_status(
+            f"{PREPARING_BACKEND_TEXT} ({elapsed_text})"
+        )
 
     def apply_anonymization_settings(
         self,
@@ -903,15 +1046,18 @@ class MainWindow(QMainWindow):
             return
 
         self.anonymization_settings = anonymization_settings
-        self.refresh_anonymization_summary()
-        self.schedule_backend_warmup()
+        self._clear_expected_backend_preparation()
 
         if persist:
             save_anonymization_settings(anonymization_settings)
 
+        if self._background_backend_warmup_enabled:
+            self.schedule_background_backend_warmup()
+
         if reprocess:
             self.schedule_anonymization_settings_reprocess()
         else:
+            self.update_output_panel()
             self.refresh_actions()
 
     def import_files(self) -> None:
@@ -960,12 +1106,11 @@ class MainWindow(QMainWindow):
             if document.path is None:
                 continue
 
-            worker = ImportDocumentRunnable(
+            self.queued_import_requests.append(
                 ImportDocumentRequest(path=document.path, document_id=document.id)
             )
-            worker.signals.completed.connect(self.on_import_completed)
-            self.active_import_workers[document.id] = worker
-            worker.start()
+        self._start_queued_imports()
+        self.refresh_actions()
 
     def _append_documents(
         self,
@@ -997,7 +1142,6 @@ class MainWindow(QMainWindow):
     def handle_document_selection_changed(self) -> None:
         self.update_output_panel()
         self.refresh_actions()
-        self.refresh_anonymization_summary()
 
     def current_document(self) -> ImportedDocument | None:
         item = self.document_list.currentItem()
@@ -1015,6 +1159,7 @@ class MainWindow(QMainWindow):
     def on_import_completed(self, result: ImportDocumentResult) -> None:
         document = result.document
         self.active_import_workers.pop(document.id, None)
+        self._start_queued_imports()
 
         if self._closing:
             return
@@ -1046,6 +1191,11 @@ class MainWindow(QMainWindow):
 
         self.refresh_document_list(preserve_selection=True)
         self.start_processing_if_possible()
+        if (
+            self._background_backend_warmup_enabled
+            and not self._has_pending_import_work()
+        ):
+            self.schedule_background_backend_warmup()
 
     def schedule_anonymization_settings_reprocess(self) -> None:
         self.anonymization_settings_generation += 1
@@ -1070,6 +1220,10 @@ class MainWindow(QMainWindow):
         self.start_processing_if_possible()
 
     def start_processing_if_possible(self) -> None:
+        if self._has_pending_import_work():
+            self.refresh_actions()
+            return
+
         if self.processing_active:
             self.refresh_actions()
             return
@@ -1083,6 +1237,7 @@ class MainWindow(QMainWindow):
             self.refresh_actions()
             return
 
+        flags_key = self.current_backend_flags_key()
         for document in documents_to_process:
             document.status = "processing"
             document.error_message = None
@@ -1098,9 +1253,13 @@ class MainWindow(QMainWindow):
         worker.signals.failed.connect(self.on_batch_failed)
 
         self.processing_active = True
+        self.backend_warmup_start_timer.stop()
         self.active_batch_worker = worker
+        self._active_batch_flags_key = flags_key
         self.active_batch_document_ids = {document.id for document in documents_to_process}
         self.pending_document_ids.difference_update(self.active_batch_document_ids)
+        if not backend_is_ready(flags_key):
+            self._set_expected_backend_preparation(flags_key)
         self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
         self.statusBar().showMessage(f"Processing {len(documents_to_process)} document(s)...")
@@ -1109,6 +1268,7 @@ class MainWindow(QMainWindow):
     def on_batch_completed(self, result: BatchProcessingResult) -> None:
         self.processing_active = False
         self.active_batch_worker = None
+        self._active_batch_flags_key = None
         self.active_batch_document_ids.clear()
 
         documents_by_id = {document.id: document for document in self.documents}
@@ -1153,10 +1313,13 @@ class MainWindow(QMainWindow):
         self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
         self.start_processing_if_possible()
+        if self._background_backend_warmup_enabled:
+            self.schedule_background_backend_warmup()
 
     def on_batch_failed(self, failure: BatchProcessingFailure) -> None:
         self.processing_active = False
         self.active_batch_worker = None
+        self._active_batch_flags_key = None
         batch_is_current = (
             failure.context_generation == self.anonymization_settings_generation
         )
@@ -1186,6 +1349,8 @@ class MainWindow(QMainWindow):
         self.refresh_document_list(preserve_selection=True)
         self.refresh_actions()
         self.start_processing_if_possible()
+        if self._background_backend_warmup_enabled:
+            self.schedule_background_backend_warmup()
 
     def refresh_document_list(
         self,
@@ -1271,8 +1436,15 @@ class MainWindow(QMainWindow):
 
         document = self.current_document()
         if not document:
+            if self._is_backend_preparation_pending():
+                self._show_backend_preparing_output()
+                return
+
             self._set_document_status("Paste text or select an imported file.")
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self.output_view.set_placeholder_references({})
             self.output_view.clear()
             return
@@ -1281,13 +1453,19 @@ class MainWindow(QMainWindow):
             self.output_view.setPlaceholderText("")
             self.output_view.clear()
             self.output_view.set_placeholder_references({})
-            self.output_view.set_processing_active(True)
+            self._set_output_processing_state(
+                True,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self._set_document_status(f"{document.display_name} is importing.")
             return
 
         processed = self.processed_documents.get(document.id)
         if processed:
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self.output_view.set_placeholder_references(
                 processed.placeholder_references
             )
@@ -1307,26 +1485,42 @@ class MainWindow(QMainWindow):
             return
 
         if document.status == "error":
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self.output_view.set_placeholder_references({})
             self.output_view.setPlainText(document.raw_text or "")
             error_message = document.error_message or "Could not be processed."
             self._set_document_status(f"{document.display_name}: {error_message}")
             return
 
+        if self._is_backend_preparation_pending():
+            self._show_backend_preparing_output()
+            return
+
         self.output_view.setPlainText(document.raw_text or "")
         self.output_view.set_placeholder_references({})
         if document.status == "processing":
-            self.output_view.set_processing_active(True)
+            self._set_output_processing_state(
+                True,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self._set_document_status(f"{document.display_name} is processing.")
         else:
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self._set_document_status(document.display_name)
 
     def _update_pasted_text_output(self, pasted_text: str) -> None:
         processed = self.paste_processed_document
         if processed:
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self.output_view.set_placeholder_references(
                 processed.placeholder_references
             )
@@ -1347,18 +1541,31 @@ class MainWindow(QMainWindow):
         self.output_view.set_placeholder_references({})
 
         if self.paste_error_message:
-            self.output_view.set_processing_active(False)
+            self._set_output_processing_state(
+                False,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self._set_document_status(
                 f"Pasted text: {self.paste_error_message}".strip()
             )
             return
 
+        if self._is_backend_preparation_pending():
+            self._show_backend_preparing_output()
+            return
+
         if self.paste_processing_active:
-            self.output_view.set_processing_active(True)
+            self._set_output_processing_state(
+                True,
+                badge_text=SCANNING_BADGE_TEXT,
+            )
             self._set_document_status("Pasted text is processing.")
             return
 
-        self.output_view.set_processing_active(False)
+        self._set_output_processing_state(
+            False,
+            badge_text=SCANNING_BADGE_TEXT,
+        )
         self._set_document_status("Pasted text")
 
     def copy_output(self) -> None:
@@ -1469,6 +1676,11 @@ class MainWindow(QMainWindow):
         worker = self.active_import_workers.pop(document.id, None)
         if worker is not None:
             worker.cancel()
+        self.queued_import_requests = deque(
+            request
+            for request in self.queued_import_requests
+            if request.document_id != document.id
+        )
         self.documents = [item for item in self.documents if item.id != document.id]
         self.pending_document_ids.discard(document.id)
         self.active_batch_document_ids.discard(document.id)
@@ -1481,6 +1693,7 @@ class MainWindow(QMainWindow):
         for worker in self.active_import_workers.values():
             worker.cancel()
         self.active_import_workers.clear()
+        self.queued_import_requests.clear()
         self.documents.clear()
         self.pending_document_ids.clear()
         self.active_batch_document_ids.clear()
@@ -1507,7 +1720,6 @@ class MainWindow(QMainWindow):
                 self.paste_processing_worker.cancel()
             self.update_output_panel()
             self.refresh_actions()
-            self.refresh_anonymization_summary()
             return
 
         if self.paste_processing_worker is not None:
@@ -1518,7 +1730,6 @@ class MainWindow(QMainWindow):
 
         self.update_output_panel()
         self.refresh_actions()
-        self.refresh_anonymization_summary()
 
     def _queue_paste_processing_restart(self, debounce: bool) -> None:
         if self._paste_processing_restart_requested:
@@ -1544,6 +1755,7 @@ class MainWindow(QMainWindow):
             return
 
         generation = self.paste_processing_generation
+        flags_key = self.current_backend_flags_key()
         request = ProcessBatchRequest(
             anonymization_settings=self.anonymization_settings,
             documents=[
@@ -1561,13 +1773,18 @@ class MainWindow(QMainWindow):
         worker.signals.failed.connect(self.on_paste_processing_failed)
 
         self.paste_processing_active = True
+        self.backend_warmup_start_timer.stop()
         self.paste_processing_worker = worker
+        self._active_paste_processing_flags_key = flags_key
+        if not backend_is_ready(flags_key):
+            self._set_expected_backend_preparation(flags_key)
         self.update_output_panel()
         self.refresh_actions()
         worker.start()
 
     def on_paste_processing_completed(self, result: BatchProcessingResult) -> None:
         self.paste_processing_worker = None
+        self._active_paste_processing_flags_key = None
         restart_requested = self._paste_processing_restart_requested
         restart_debounce = self._paste_processing_restart_debounce
         self._paste_processing_restart_requested = False
@@ -1585,9 +1802,12 @@ class MainWindow(QMainWindow):
             self._schedule_paste_processing_run(restart_debounce)
         self.update_output_panel()
         self.refresh_actions()
+        if self._background_backend_warmup_enabled:
+            self.schedule_background_backend_warmup()
 
     def on_paste_processing_failed(self, failure: BatchProcessingFailure) -> None:
         self.paste_processing_worker = None
+        self._active_paste_processing_flags_key = None
         restart_requested = self._paste_processing_restart_requested
         restart_debounce = self._paste_processing_restart_debounce
         self._paste_processing_restart_requested = False
@@ -1602,11 +1822,13 @@ class MainWindow(QMainWindow):
             self._schedule_paste_processing_run(restart_debounce)
         self.update_output_panel()
         self.refresh_actions()
+        if self._background_backend_warmup_enabled:
+            self.schedule_background_backend_warmup()
 
     def refresh_actions(self) -> None:
         has_documents = bool(self.documents)
         has_pasted_text = bool(self.current_pasted_text())
-        has_active_imports = bool(self.active_import_workers)
+        has_active_imports = self._has_pending_import_work()
         current_document = self.current_document()
         active_processed_document = (
             self.paste_processed_document
@@ -1634,6 +1856,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
         self.paste_processing_timer.stop()
+        self.backend_status_timer.stop()
+        self.backend_warmup_start_timer.stop()
         if self.active_batch_worker is not None:
             self.active_batch_worker.cancel()
             self.active_batch_worker = None
@@ -1646,4 +1870,23 @@ class MainWindow(QMainWindow):
         for worker in self.active_import_workers.values():
             worker.cancel()
         self.active_import_workers.clear()
+        self.queued_import_requests.clear()
         super().closeEvent(event)
+
+    def _has_pending_import_work(self) -> bool:
+        return bool(self.active_import_workers or self.queued_import_requests)
+
+    def _start_queued_imports(self) -> None:
+        max_concurrent_imports = configured_max_concurrent_imports()
+        while (
+            len(self.active_import_workers) < max_concurrent_imports
+            and self.queued_import_requests
+        ):
+            request = self.queued_import_requests.popleft()
+            if self.document_by_id(request.document_id) is None:
+                continue
+
+            worker = ImportDocumentRunnable(request)
+            worker.signals.completed.connect(self.on_import_completed)
+            self.active_import_workers[request.document_id] = worker
+            worker.start()

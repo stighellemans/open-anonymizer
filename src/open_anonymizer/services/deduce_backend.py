@@ -9,7 +9,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
+import threading
 from typing import Any
 
 from rapidfuzz.distance import DamerauLevenshtein
@@ -72,6 +74,11 @@ FRENCH_MONTH_WORDS = [
     "dec",
 ]
 
+_backend_assets_lock = threading.Lock()
+_backend_assets_instance: "_SharedBackendAssets | None" = None
+_backend_models_lock = threading.Lock()
+_backend_models: dict[tuple[bool, ...], Any] = {}
+
 
 @dataclass(frozen=True)
 class BackendAnnotation:
@@ -97,6 +104,14 @@ class BackendAnalysisResult:
         return _restore_masked_emails(text, self.masked_email_replacements)
 
 
+@dataclass(frozen=True)
+class _SharedBackendAssets:
+    lookup_data_path: Path
+    cache_path: Path
+    tokenizer: Any
+    lookup_structs: Any
+
+
 def _backend_cache_dir() -> Path:
     if sys.platform == "darwin":
         cache_root = Path.home() / "Library" / "Caches"
@@ -112,21 +127,61 @@ def _backend_cache_dir() -> Path:
     return cache_dir
 
 
-def _bundled_lookup_cache_dir() -> Path | None:
+def _lookup_data_dir() -> Path:
     import belgian_deduce
 
-    package_dir = Path(belgian_deduce.__file__).resolve().parent
-    lookup_dir = package_dir / "data" / "lookup"
+    return Path(belgian_deduce.__file__).resolve().parent / "data" / "lookup"
+
+
+def _bundled_lookup_cache_dir() -> Path | None:
+    lookup_dir = _lookup_data_dir()
     if (lookup_dir / "cache" / "lookup_structs.pickle").exists():
         return lookup_dir
     return None
 
 
-def _lookup_cache_dir() -> Path:
+def _bundled_lookup_cache_file() -> Path | None:
     bundled_cache_dir = _bundled_lookup_cache_dir()
-    if bundled_cache_dir is not None:
-        return bundled_cache_dir
-    return _backend_cache_dir()
+    if bundled_cache_dir is None:
+        return None
+    return bundled_cache_dir / "cache" / "lookup_structs.pickle"
+
+
+def _user_lookup_cache_file(cache_dir: Path) -> Path:
+    return cache_dir / "cache" / "lookup_structs.pickle"
+
+
+def _sync_bundled_lookup_cache(cache_dir: Path) -> None:
+    bundled_cache_file = _bundled_lookup_cache_file()
+    if bundled_cache_file is None:
+        return
+
+    user_cache_file = _user_lookup_cache_file(cache_dir)
+    if user_cache_file.exists():
+        bundled_stat = bundled_cache_file.stat()
+        user_stat = user_cache_file.stat()
+        if (
+            user_stat.st_size == bundled_stat.st_size
+            and user_stat.st_mtime_ns == bundled_stat.st_mtime_ns
+        ):
+            return
+
+    user_cache_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_cache_file = user_cache_file.with_suffix(f"{user_cache_file.suffix}.tmp")
+    try:
+        shutil.copy2(bundled_cache_file, temporary_cache_file)
+        temporary_cache_file.replace(user_cache_file)
+    finally:
+        if temporary_cache_file.exists():
+            temporary_cache_file.unlink()
+
+
+def _lookup_cache_dir() -> Path:
+    cache_dir = _backend_cache_dir()
+    # Package timestamps can invalidate a bundled cache unexpectedly, so keep a
+    # synced copy in the user cache and load from there.
+    _sync_bundled_lookup_cache(cache_dir)
+    return cache_dir
 
 
 def _dedupe_nonempty(items: list[str]) -> list[str]:
@@ -273,19 +328,116 @@ def _flags_from_key(flags_key: tuple[bool, ...]) -> RecognitionFlags:
     return RecognitionFlags(**dict(zip(RECOGNITION_GROUPS, flags_key)))
 
 
-@lru_cache(maxsize=64)
-def _backend_model(flags_key: tuple[bool, ...]) -> Any:
+def _build_backend_assets() -> _SharedBackendAssets:
     from belgian_deduce import Deduce
+    from belgian_deduce import __version__ as package_version
+    from belgian_deduce.lookup_structs import get_lookup_structs
 
-    return Deduce(
-        load_base_config=False,
-        config=build_backend_config(_flags_from_key(flags_key)),
-        cache_path=_lookup_cache_dir(),
+    lookup_data_path = _lookup_data_dir()
+    cache_path = _lookup_cache_dir()
+    tokenizer = Deduce._initialize_tokenizer(lookup_data_path)
+    lookup_structs = get_lookup_structs(
+        lookup_path=lookup_data_path,
+        cache_path=cache_path,
+        tokenizer=tokenizer,
+        package_version=package_version,
+    )
+    return _SharedBackendAssets(
+        lookup_data_path=lookup_data_path,
+        cache_path=cache_path,
+        tokenizer=tokenizer,
+        lookup_structs=lookup_structs,
     )
 
 
+def _backend_assets() -> _SharedBackendAssets:
+    global _backend_assets_instance
+
+    assets = _backend_assets_instance
+    if assets is not None:
+        return assets
+
+    with _backend_assets_lock:
+        assets = _backend_assets_instance
+        if assets is None:
+            assets = _build_backend_assets()
+            _backend_assets_instance = assets
+        return assets
+
+
+def _build_backend_model(flags_key: tuple[bool, ...]) -> Any:
+    import docdeid as dd
+    from belgian_deduce import Deduce
+    from belgian_deduce.deduce import _DeduceProcessorLoader
+
+    assets = _backend_assets()
+    backend = Deduce.__new__(Deduce)
+    dd.DocDeid.__init__(backend)
+    backend.config = Deduce._initialize_config(
+        load_base_config=False,
+        user_config=build_backend_config(_flags_from_key(flags_key)),
+    )
+    backend.lookup_data_path = assets.lookup_data_path
+    backend.cache_path = assets.cache_path
+    backend.tokenizers = {"default": assets.tokenizer}
+    backend.lookup_structs = assets.lookup_structs
+    backend.processors = _DeduceProcessorLoader().load(
+        config=backend.config,
+        extras={"tokenizer": assets.tokenizer, "ds": assets.lookup_structs},
+    )
+    return backend
+
+
+def _backend_model(flags_key: tuple[bool, ...]) -> Any:
+    model = _backend_models.get(flags_key)
+    if model is not None:
+        return model
+
+    with _backend_models_lock:
+        model = _backend_models.get(flags_key)
+        if model is None:
+            model = _build_backend_model(flags_key)
+            _backend_models[flags_key] = model
+        return model
+
+
+def prime_backend_resources(
+    recognition_flags: RecognitionFlags | None = None,
+) -> None:
+    flags = recognition_flags or RecognitionFlags()
+    _backend_assets()
+    _backend_model(flags.as_key())
+
+
+def warm_backend_for_settings(settings: AnonymizationSettings) -> None:
+    prime_backend_resources(settings.recognition_flags)
+
+
+def prime_backend_resources_async(
+    recognition_flags: RecognitionFlags | None = None,
+) -> threading.Thread:
+    thread = threading.Thread(
+        target=prime_backend_resources,
+        kwargs={"recognition_flags": recognition_flags},
+        name="open-anonymizer-backend-warmup",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def backend_is_ready(flags_key: tuple[bool, ...]) -> bool:
+    with _backend_models_lock:
+        return flags_key in _backend_models
+
+
 def release_backend_resources() -> None:
-    _backend_model.cache_clear()
+    global _backend_assets_instance
+
+    with _backend_models_lock:
+        _backend_models.clear()
+    with _backend_assets_lock:
+        _backend_assets_instance = None
 
 
 atexit.register(release_backend_resources)
@@ -305,10 +457,6 @@ def deidentify_text_with_references(
 
 def deidentify_text(text: str, settings: AnonymizationSettings) -> str:
     return deidentify_text_with_references(text, settings).deidentified_text
-
-
-def warm_backend_for_settings(settings: AnonymizationSettings) -> None:
-    _backend_model(settings.recognition_flags.as_key())
 
 
 def placeholder_tag_name(tag: str) -> str:

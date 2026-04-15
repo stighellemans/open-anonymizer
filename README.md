@@ -21,7 +21,7 @@ Open Anonymizer is a local desktop application for de-identifying Dutch and Fren
 
 - Python 3.9
 - PySide6
-- `belgian-deduce` pinned to commit `de945522313a2b437cee5e0418a330d7de8368a2`
+- `belgian-deduce` pinned to commit `eabc0ff6d5a5af19f76a013055ec56c857a676ab`
 - `pypdfium2` with `pypdf` fallbacks for text-based PDF extraction
 - PyInstaller for desktop packaging
 

@@ -19,7 +19,7 @@ wheels = [
 [[package]]
 name = "belgian-deduce"
 version = "4.0.0"
-source = { git = "https://github.com/stighellemans/belgian-deduce.git?rev=de945522313a2b437cee5e0418a330d7de8368a2#de945522313a2b437cee5e0418a330d7de8368a2" }
+source = { git = "https://github.com/stighellemans/belgian-deduce.git?rev=eabc0ff6d5a5af19f76a013055ec56c857a676ab#eabc0ff6d5a5af19f76a013055ec56c857a676ab" }
 dependencies = [
     { name = "docdeid" },
     { name = "frozendict" },
@@ -322,7 +322,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "belgian-deduce", git = "https://github.com/stighellemans/belgian-deduce.git?rev=de945522313a2b437cee5e0418a330d7de8368a2" },
+    { name = "belgian-deduce", git = "https://github.com/stighellemans/belgian-deduce.git?rev=eabc0ff6d5a5af19f76a013055ec56c857a676ab" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.3,<7" },
     { name = "pypdf", specifier = ">=5.7,<6" },
     { name = "pypdfium2", specifier = ">=4.30,<5" },

@@ -16,7 +16,7 @@ dependencies = [
   "PySide6>=6.6,<6.8",
   "pypdf>=5.7,<6",
   "pypdfium2>=4.30,<5",
-  "belgian-deduce @ git+https://github.com/stighellemans/belgian-deduce.git@de945522313a2b437cee5e0418a330d7de8368a2",
+  "belgian-deduce @ git+https://github.com/stighellemans/belgian-deduce.git@eabc0ff6d5a5af19f76a013055ec56c857a676ab",
 ]
 
 [project.optional-dependencies]

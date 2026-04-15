@@ -26,6 +26,7 @@ class ScanningPlainTextEdit(QPlainTextEdit):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._processing_active = False
+        self._processing_badge_text = "Scanning"
         self._placeholder_references: dict[str, tuple[str, ...]] = {}
         self._reference_ranges: list[tuple[int, int, str]] = []
         self._scan_phase = 0.0
@@ -50,6 +51,15 @@ class ScanningPlainTextEdit(QPlainTextEdit):
 
     def is_processing_active(self) -> bool:
         return self._processing_active
+
+    def set_processing_badge_text(self, text: str) -> None:
+        badge_text = text or "Scanning"
+        if self._processing_badge_text == badge_text:
+            return
+
+        self._processing_badge_text = badge_text
+        if self._processing_active:
+            self.viewport().update()
 
     def set_placeholder_references(
         self,
@@ -228,7 +238,7 @@ class ScanningPlainTextEdit(QPlainTextEdit):
         gradient.setColorAt(1.0, QColor(59, 130, 246, 0))
         painter.fillRect(rect, gradient)
 
-        badge_text = "Scanning"
+        badge_text = self._processing_badge_text
         metrics = painter.fontMetrics()
         badge_width = metrics.horizontalAdvance(badge_text) + 20
         badge_height = 26
