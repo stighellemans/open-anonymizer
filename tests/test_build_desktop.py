@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -17,6 +19,14 @@ def _load_build_desktop_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _iter_ico_sizes(ico_bytes: bytes) -> Iterator[int]:
+    icon_count = int.from_bytes(ico_bytes[4:6], "little")
+    for index in range(icon_count):
+        entry_offset = 6 + (16 * index)
+        size = ico_bytes[entry_offset] or 256
+        yield size
 
 
 def test_build_pyinstaller_args_adds_custom_hooks_and_qt_exclusions(monkeypatch) -> None:
@@ -100,6 +110,23 @@ def test_build_pyinstaller_args_adds_macos_options_only_on_macos(monkeypatch, tm
     assert "--osx-bundle-identifier" not in windows_args
     assert "--icon" in windows_args
     assert str(tmp_path / "OpenAnonymizer.ico") in windows_args
+
+
+def test_build_windows_ico_embeds_multiple_icon_sizes(monkeypatch, tmp_path: Path) -> None:
+    build_desktop = _load_build_desktop_module()
+    monkeypatch.setattr(build_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(build_desktop, "REPO_ROOT", tmp_path)
+
+    with suppress(FileNotFoundError):
+        (tmp_path / "build" / "OpenAnonymizer.ico").unlink()
+
+    ico_path = build_desktop._build_windows_ico(build_desktop.APP_ICON_SOURCE)
+
+    assert ico_path == tmp_path / "build" / "OpenAnonymizer.ico"
+    ico_bytes = ico_path.read_bytes()
+    assert ico_bytes[:4] == b"\x00\x00\x01\x00"
+    assert int.from_bytes(ico_bytes[4:6], "little") == len(build_desktop.WINDOWS_ICON_SIZES)
+    assert tuple(_iter_ico_sizes(ico_bytes)) == build_desktop.WINDOWS_ICON_SIZES
 
 
 def test_runtime_source_only_imports_expected_qt_modules() -> None:

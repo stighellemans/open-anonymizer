@@ -92,7 +92,7 @@ def test_main_window_uses_white_header_icon_variant(qtbot) -> None:
     window_pixmap = window.windowIcon().pixmap(header_pixmap.size())
 
     assert _average_nontransparent_lightness(header_pixmap.toImage()) > 240
-    assert _average_nontransparent_lightness(window_pixmap.toImage()) < 80
+    assert _average_nontransparent_lightness(window_pixmap.toImage()) > 240
 
 
 def test_recommended_window_size_stays_within_available_screen() -> None:

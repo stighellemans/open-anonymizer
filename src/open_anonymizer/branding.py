@@ -44,12 +44,35 @@ def _header_icon_path() -> Path:
     return _asset_path("white_fingerprint.svg")
 
 
+def _render_svg_pixmap(svg_path: Path, size: QSize) -> QPixmap:
+    target_size = QSize(max(1, size.width()), max(1, size.height()))
+    renderer = QSvgRenderer(str(svg_path))
+    if not renderer.isValid():
+        return QPixmap()
+
+    rendered_pixmap = QPixmap(target_size)
+    rendered_pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(rendered_pixmap)
+    renderer.render(painter)
+    painter.end()
+    return rendered_pixmap
+
+
 def application_icon() -> QIcon:
+    icon = QIcon()
+    for size in _APP_ICON_SIZES:
+        pixmap = _render_svg_pixmap(_header_icon_path(), QSize(size, size))
+        if not pixmap.isNull():
+            icon.addPixmap(pixmap)
+
+    if not icon.isNull():
+        return icon
+
     source_icon = _source_application_icon()
     if source_icon.isNull():
         return QIcon()
 
-    icon = QIcon()
     for size in _APP_ICON_SIZES:
         pixmap = source_icon.pixmap(QSize(size, size))
         if not pixmap.isNull():
@@ -59,19 +82,12 @@ def application_icon() -> QIcon:
 
 
 def application_header_icon(size: QSize) -> QPixmap:
-    target_size = QSize(max(1, size.width()), max(1, size.height()))
-
-    renderer = QSvgRenderer(str(_header_icon_path()))
-    if renderer.isValid():
-        rendered_pixmap = QPixmap(target_size)
-        rendered_pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(rendered_pixmap)
-        renderer.render(painter)
-        painter.end()
+    rendered_pixmap = _render_svg_pixmap(_header_icon_path(), size)
+    if not rendered_pixmap.isNull():
         return rendered_pixmap
 
     source_icon = _source_application_icon()
+    target_size = QSize(max(1, size.width()), max(1, size.height()))
     return source_icon.pixmap(target_size)
 
 

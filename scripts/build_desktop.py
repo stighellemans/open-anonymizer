@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from open_anonymizer.services.ocr_runtime import BUNDLED_TESSERACT_DIRNAME
 
 
-APP_ICON_SOURCE = REPO_ROOT / "src" / "open_anonymizer" / "assets" / "fingerprint.png"
+APP_ICON_SOURCE = REPO_ROOT / "src" / "open_anonymizer" / "assets" / "white_fingerprint.svg"
 CUSTOM_HOOKS_DIR = REPO_ROOT / "pyinstaller_hooks"
 MACOS_ICON_SIZES = (
     (16, "icon_16x16.png"),
@@ -31,6 +31,7 @@ MACOS_ICON_SIZES = (
     (512, "icon_512x512.png"),
     (1024, "icon_512x512@2x.png"),
 )
+WINDOWS_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 RUNTIME_BINARY_SUFFIXES = {".dylib", ".dll", ".exe", ".so"}
 DEFAULT_EXCLUDED_PYSIDE6_MODULES = (
     "PySide6.QtNetwork",
@@ -103,69 +104,29 @@ def _collect_package_data_args(
     return args
 
 
-def _build_macos_icns(icon_path: Path) -> Path | None:
-    if sys.platform != "darwin" or not icon_path.exists():
-        return None
-
-    iconutil = shutil.which("iconutil")
-    if iconutil is None:
-        print("Skipping application bundle icon because iconutil is unavailable.")
-        return None
-
+def _render_icon_image(icon_path: Path, size: int):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
 
-    source_image = QImage(str(icon_path))
-    if source_image.isNull():
-        print(f"Skipping application bundle icon because {icon_path} could not be loaded.")
-        return None
+    if icon_path.suffix.lower() == ".svg":
+        from PySide6.QtSvg import QSvgRenderer
 
-    build_dir = REPO_ROOT / "build"
-    iconset_dir = build_dir / "OpenAnonymizer.iconset"
-    icns_path = build_dir / "OpenAnonymizer.icns"
-    iconset_dir.mkdir(parents=True, exist_ok=True)
+        renderer = QSvgRenderer(str(icon_path))
+        if not renderer.isValid():
+            return QImage()
 
-    for size, filename in MACOS_ICON_SIZES:
         image = QImage(size, size, QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        scaled_image = source_image.scaled(
-            size,
-            size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        x_offset = (size - scaled_image.width()) / 2
-        y_offset = (size - scaled_image.height()) / 2
-        painter.drawImage(int(x_offset), int(y_offset), scaled_image)
+        renderer.render(painter)
         painter.end()
-
-        if not image.save(str(iconset_dir / filename)):
-            raise RuntimeError(f"Failed to render icon asset: {iconset_dir / filename}")
-
-    subprocess.run(
-        [iconutil, "-c", "icns", str(iconset_dir), "-o", str(icns_path)],
-        check=True,
-    )
-    return icns_path
-
-
-def _build_windows_ico(icon_path: Path) -> Path | None:
-    if sys.platform != "win32" or not icon_path.exists():
-        return None
-
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QImage, QPainter
+        return image
 
     source_image = QImage(str(icon_path))
     if source_image.isNull():
-        print(f"Skipping Windows executable icon because {icon_path} could not be loaded.")
-        return None
+        return QImage()
 
-    size = 256
     image = QImage(size, size, QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -182,12 +143,102 @@ def _build_windows_ico(icon_path: Path) -> Path | None:
     y_offset = (size - scaled_image.height()) / 2
     painter.drawImage(int(x_offset), int(y_offset), scaled_image)
     painter.end()
+    return image
+
+
+def _encode_png_image(image) -> bytes:
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+
+    png_data = QByteArray()
+    buffer = QBuffer(png_data)
+    if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+        raise RuntimeError("Failed to open the icon buffer for PNG encoding.")
+
+    try:
+        if not image.save(buffer, "PNG"):
+            raise RuntimeError("Failed to encode the icon image as PNG.")
+    finally:
+        buffer.close()
+
+    return bytes(png_data)
+
+
+def _write_windows_ico(icon_images: list[tuple[int, bytes]], ico_path: Path) -> None:
+    icon_count = len(icon_images)
+    image_offset = 6 + (16 * icon_count)
+    icon_dir = bytearray()
+    icon_dir.extend((0).to_bytes(2, "little"))
+    icon_dir.extend((1).to_bytes(2, "little"))
+    icon_dir.extend(icon_count.to_bytes(2, "little"))
+
+    directory_entries: list[bytes] = []
+    encoded_images: list[bytes] = []
+
+    for size, png_bytes in icon_images:
+        entry = bytearray()
+        entry.append(0 if size >= 256 else size)
+        entry.append(0 if size >= 256 else size)
+        entry.append(0)
+        entry.append(0)
+        entry.extend((1).to_bytes(2, "little"))
+        entry.extend((32).to_bytes(2, "little"))
+        entry.extend(len(png_bytes).to_bytes(4, "little"))
+        entry.extend(image_offset.to_bytes(4, "little"))
+        directory_entries.append(bytes(entry))
+        encoded_images.append(png_bytes)
+        image_offset += len(png_bytes)
+
+    ico_path.write_bytes(bytes(icon_dir) + b"".join(directory_entries) + b"".join(encoded_images))
+
+
+def _build_macos_icns(icon_path: Path) -> Path | None:
+    if sys.platform != "darwin" or not icon_path.exists():
+        return None
+
+    iconutil = shutil.which("iconutil")
+    if iconutil is None:
+        print("Skipping application bundle icon because iconutil is unavailable.")
+        return None
+
+    probe_image = _render_icon_image(icon_path, 1024)
+    if probe_image.isNull():
+        print(f"Skipping application bundle icon because {icon_path} could not be loaded.")
+        return None
+
+    build_dir = REPO_ROOT / "build"
+    iconset_dir = build_dir / "OpenAnonymizer.iconset"
+    icns_path = build_dir / "OpenAnonymizer.icns"
+    iconset_dir.mkdir(parents=True, exist_ok=True)
+
+    for size, filename in MACOS_ICON_SIZES:
+        image = _render_icon_image(icon_path, size)
+
+        if not image.save(str(iconset_dir / filename)):
+            raise RuntimeError(f"Failed to render icon asset: {iconset_dir / filename}")
+
+    subprocess.run(
+        [iconutil, "-c", "icns", str(iconset_dir), "-o", str(icns_path)],
+        check=True,
+    )
+    return icns_path
+
+
+def _build_windows_ico(icon_path: Path) -> Path | None:
+    if sys.platform != "win32" or not icon_path.exists():
+        return None
+
+    icon_images: list[tuple[int, bytes]] = []
+    for size in WINDOWS_ICON_SIZES:
+        image = _render_icon_image(icon_path, size)
+        if image.isNull():
+            print(f"Skipping Windows executable icon because {icon_path} could not be loaded.")
+            return None
+        icon_images.append((size, _encode_png_image(image)))
 
     build_dir = REPO_ROOT / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     ico_path = build_dir / "OpenAnonymizer.ico"
-    if not image.save(str(ico_path)):
-        raise RuntimeError(f"Failed to render Windows icon asset: {ico_path}")
+    _write_windows_ico(icon_images, ico_path)
     return ico_path
 
 
