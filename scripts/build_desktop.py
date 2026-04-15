@@ -43,8 +43,11 @@ DEFAULT_EXCLUDED_PYSIDE6_MODULES = (
 NESTED_LOOKUP_CACHE_FRAGMENT = "data/lookup/cache/cache"
 
 
-def _pyinstaller_mapping(source: Path, destination: Path) -> str:
-    return f"{source}{os.pathsep}{destination}"
+def _pyinstaller_mapping(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+) -> str:
+    return f"{os.fspath(source)}{os.pathsep}{os.fspath(destination)}"
 
 
 def _is_runtime_binary(path: Path) -> bool:
@@ -93,7 +96,7 @@ def _collect_package_data_args(
         args.extend(
             [
                 "--add-data",
-                _pyinstaller_mapping(Path(source), Path(destination)),
+                _pyinstaller_mapping(source, destination),
             ]
         )
 
