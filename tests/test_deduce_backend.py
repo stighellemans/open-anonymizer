@@ -81,6 +81,15 @@ def test_deidentify_text_keeps_patient_birthdate_when_dates_disabled() -> None:
     assert "[DATE-1]" in result
 
 
+def test_deidentify_text_supports_trailing_initial_after_name() -> None:
+    result = deidentify_text(
+        "Dr. Vanassche B.",
+        AnonymizationSettings(),
+    )
+
+    assert result == "[PERSON-1]"
+
+
 def test_deidentify_text_keeps_custom_name_and_address_when_detection_is_disabled() -> None:
     result = deidentify_text(
         "Sophie Martin habite Rue de la Loi 12, 1000 Bruxelles.",
