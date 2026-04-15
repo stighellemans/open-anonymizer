@@ -1,31 +1,53 @@
 from __future__ import annotations
 
-from importlib.resources import as_file, files
+import sys
+from pathlib import Path
 
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QIcon
 
 
-_APP_ICON_RESOURCE = files("open_anonymizer.assets").joinpath("fingerprint.png")
-_BUG_REPORT_ICON_RESOURCE = files("open_anonymizer.assets").joinpath("bug-report.png")
 _APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
 
 
+def _asset_path(filename: str) -> Path:
+    candidates: list[Path] = []
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "open_anonymizer" / "assets" / filename)
+
+    module_dir = Path(__file__).resolve().parent
+    candidates.append(module_dir / "assets" / filename)
+
+    executable_dir = Path(sys.executable).resolve().parent
+    candidates.extend(
+        [
+            executable_dir / "_internal" / "open_anonymizer" / "assets" / filename,
+            executable_dir.parent / "Resources" / "open_anonymizer" / "assets" / filename,
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
 def application_icon() -> QIcon:
-    with as_file(_APP_ICON_RESOURCE) as icon_path:
-        source_icon = QIcon(str(icon_path))
-        if source_icon.isNull():
-            return QIcon()
+    source_icon = QIcon(str(_asset_path("fingerprint.png")))
+    if source_icon.isNull():
+        return QIcon()
 
-        icon = QIcon()
-        for size in _APP_ICON_SIZES:
-            pixmap = source_icon.pixmap(QSize(size, size))
-            if not pixmap.isNull():
-                icon.addPixmap(pixmap)
+    icon = QIcon()
+    for size in _APP_ICON_SIZES:
+        pixmap = source_icon.pixmap(QSize(size, size))
+        if not pixmap.isNull():
+            icon.addPixmap(pixmap)
 
-        return icon if not icon.isNull() else source_icon
+    return icon if not icon.isNull() else source_icon
 
 
 def bug_report_icon() -> QIcon:
-    with as_file(_BUG_REPORT_ICON_RESOURCE) as icon_path:
-        return QIcon(str(icon_path))
+    return QIcon(str(_asset_path("bug-report.png")))
