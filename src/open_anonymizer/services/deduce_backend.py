@@ -307,18 +307,27 @@ def _call_get_lookup_structs(get_lookup_structs: Any, **kwargs: Any) -> Any:
     ):
         return get_lookup_structs(**kwargs)
 
-    accepted_kwargs = {
-        name: value
-        for name, value in kwargs.items()
-        if (
-            name in signature.parameters
-            and signature.parameters[name].kind
-            in {
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            }
-        )
+    supported_parameter_names = {
+        name
+        for name, parameter in signature.parameters.items()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
     }
+    accepted_kwargs = {name: value for name, value in kwargs.items() if name in supported_parameter_names}
+
+    if "package_version" in supported_parameter_names and "package_version" not in accepted_kwargs:
+        package_version = kwargs.get("deduce_version")
+        if package_version is not None:
+            accepted_kwargs["package_version"] = package_version
+
+    if "deduce_version" in supported_parameter_names and "deduce_version" not in accepted_kwargs:
+        deduce_version = kwargs.get("package_version")
+        if deduce_version is not None:
+            accepted_kwargs["deduce_version"] = deduce_version
+
     return get_lookup_structs(**accepted_kwargs)
 
 

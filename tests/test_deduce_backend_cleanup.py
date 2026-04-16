@@ -331,3 +331,64 @@ def test_build_backend_assets_supports_legacy_lookup_structs_signature(
             "save_cache": False,
         }
     ]
+
+
+def test_build_backend_assets_supports_package_version_lookup_structs_signature(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    lookup_data_path = tmp_path / "lookup-data"
+    tokenizer = object()
+    rebuilt_lookup_structs = {"rebuilt": True}
+    get_lookup_structs_calls: list[dict[str, object]] = []
+
+    def fake_get_lookup_structs(
+        lookup_path,
+        cache_path,
+        tokenizer,
+        package_version,
+        build=False,
+        save_cache=True,
+    ):
+        get_lookup_structs_calls.append(
+            {
+                "lookup_path": lookup_path,
+                "cache_path": cache_path,
+                "tokenizer": tokenizer,
+                "package_version": package_version,
+                "build": build,
+                "save_cache": save_cache,
+            }
+        )
+        return rebuilt_lookup_structs
+
+    fake_deduce = SimpleNamespace(
+        _initialize_tokenizer=lambda path: tokenizer if path == lookup_data_path else None
+    )
+
+    monkeypatch.setattr(deduce_backend, "_lookup_data_dir", lambda: lookup_data_path)
+    monkeypatch.setattr(deduce_backend, "_load_bundled_lookup_structs", lambda deduce_version: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce",
+        SimpleNamespace(Deduce=fake_deduce, __version__="1.2.3"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce.lookup_structs",
+        SimpleNamespace(get_lookup_structs=fake_get_lookup_structs),
+    )
+
+    assets = deduce_backend._build_backend_assets()
+
+    assert assets.lookup_structs == rebuilt_lookup_structs
+    assert get_lookup_structs_calls == [
+        {
+            "lookup_path": lookup_data_path,
+            "cache_path": lookup_data_path,
+            "tokenizer": tokenizer,
+            "package_version": "1.2.3",
+            "build": True,
+            "save_cache": False,
+        }
+    ]
