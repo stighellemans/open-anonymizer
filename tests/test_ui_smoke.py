@@ -15,9 +15,11 @@ from open_anonymizer.models import (
     ProcessedDocument,
 )
 from open_anonymizer.services.importer import ImportCancelledError
+from open_anonymizer.ui.drop_area import DEFAULT_DROP_AREA_LABEL
 from open_anonymizer.ui.anonymization_dialog import save_anonymization_settings
 from open_anonymizer.ui.main_window import (
     DOCUMENT_ID_ROLE,
+    FILE_IMPORT_BLOCKED_MESSAGE,
     MainWindow,
     PREPARING_BACKEND_TEXT,
     STATUS_COLORS,
@@ -371,6 +373,79 @@ def test_main_window_accepts_file_drop_outside_drop_area(
     assert drop_event.isAccepted()
     assert dropped_paths == [file_path]
     assert window.drop_area.property("dragActive") is False
+
+
+def test_main_window_blocks_file_import_while_backend_prepares(
+    tmp_path: Path,
+    qtbot,
+    monkeypatch,
+) -> None:
+    class FakeWorker:
+        def cancel(self) -> None:
+            return
+
+    file_path = tmp_path / "blocked.txt"
+    file_path.write_text("Source text", encoding="utf-8")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.backend_is_ready",
+        lambda flags_key: False,
+    )
+
+    window.paste_processing_active = True
+    window.paste_processing_worker = FakeWorker()
+    window._active_paste_processing_flags_key = window.current_backend_flags_key()
+    window._set_expected_backend_preparation(window.current_backend_flags_key())
+    window.refresh_actions()
+
+    assert window.drop_area.import_button.isEnabled() is False
+    assert window.drop_area.label.text() == DEFAULT_DROP_AREA_LABEL
+
+    window.handle_dropped_paths([file_path])
+
+    assert window.documents == []
+    assert window.statusBar().currentMessage() == FILE_IMPORT_BLOCKED_MESSAGE
+
+
+def test_main_window_rejects_file_drop_outside_drop_area_while_backend_prepares(
+    tmp_path: Path,
+    qtbot,
+    monkeypatch,
+) -> None:
+    class FakeWorker:
+        def cancel(self) -> None:
+            return
+
+    file_path = tmp_path / "outside-drop-zone.txt"
+    file_path.write_text("Source text", encoding="utf-8")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    dropped_paths: list[Path] = []
+    window.handle_dropped_paths = lambda paths: dropped_paths.extend(paths)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.backend_is_ready",
+        lambda flags_key: False,
+    )
+
+    window.paste_processing_active = True
+    window.paste_processing_worker = FakeWorker()
+    window._active_paste_processing_flags_key = window.current_backend_flags_key()
+    window._set_expected_backend_preparation(window.current_backend_flags_key())
+    window.refresh_actions()
+
+    drag_enter_event, drop_event = _drop_file_on_widget(
+        window.paste_input.viewport(),
+        file_path,
+    )
+
+    assert drag_enter_event.isAccepted() is False
+    assert drop_event.isAccepted() is False
+    assert dropped_paths == []
 
 
 def test_main_window_pasted_text_copy_flow_disables_export(qtbot) -> None:
@@ -954,7 +1029,46 @@ def test_main_window_shows_preparing_message_for_pasted_text_while_backend_initi
     assert window.document_status_label.text().startswith(PREPARING_BACKEND_TEXT)
 
 
-def test_main_window_starts_background_warmup_while_imports_are_active(
+def test_main_window_does_not_rewrite_preparing_output_on_status_refresh(
+    qtbot,
+    monkeypatch,
+) -> None:
+    class FakeWorker:
+        def cancel(self) -> None:
+            return
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.backend_is_ready",
+        lambda flags_key: False,
+    )
+
+    calls: list[str] = []
+    original_set_plain_text = window.output_view.setPlainText
+
+    def tracked_set_plain_text(text: str) -> None:
+        calls.append(text)
+        original_set_plain_text(text)
+
+    monkeypatch.setattr(window.output_view, "setPlainText", tracked_set_plain_text)
+
+    window.set_pasted_text("Source text")
+    window.paste_processing_timer.stop()
+    window.paste_processing_active = True
+    window.paste_processing_worker = FakeWorker()
+    window._active_paste_processing_flags_key = window.current_backend_flags_key()
+    window._set_expected_backend_preparation(window.current_backend_flags_key())
+
+    window.update_output_panel()
+    window._refresh_backend_preparation_state()
+    window._refresh_backend_preparation_state()
+
+    assert calls.count(PREPARING_BACKEND_TEXT) == 1
+
+
+def test_main_window_defers_background_warmup_while_imports_are_active(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1002,9 +1116,9 @@ def test_main_window_starts_background_warmup_while_imports_are_active(
     window.active_import_workers["importing-doc"] = FakeImportWorker()
     window.start_background_backend_warmup()
 
-    assert len(created_workers) == 1
-    assert created_workers[0].started is True
-    assert window.backend_warmup_worker is created_workers[0]
+    assert created_workers == []
+    assert window.backend_warmup_worker is None
+    assert window.backend_warmup_start_timer.isActive() is True
     window.backend_warmup_start_timer.stop()
 
 

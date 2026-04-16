@@ -65,7 +65,11 @@ class ScanningPlainTextEdit(QPlainTextEdit):
         self,
         placeholder_references: dict[str, tuple[str, ...]],
     ) -> None:
-        self._placeholder_references = dict(placeholder_references)
+        normalized_references = dict(placeholder_references)
+        if self._placeholder_references == normalized_references:
+            return
+
+        self._placeholder_references = normalized_references
         self._rebuild_reference_ranges()
         if not self._placeholder_references:
             QToolTip.hideText()

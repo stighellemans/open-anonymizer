@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -74,6 +75,11 @@ QPushButton#secondaryButton:hover:!disabled, QToolButton#secondaryButton:hover:!
 QPushButton:disabled, QToolButton:disabled {
     background: #a7b0ae;
     color: #eef2f1;
+}
+QPushButton#secondaryButton:disabled, QToolButton#secondaryButton:disabled {
+    background: #e2ddd6;
+    color: #8b857d;
+    border: 1px solid #d0c8be;
 }
 QPushButton:hover:!disabled, QToolButton:hover:!disabled {
     background: #163b35;
@@ -218,6 +224,8 @@ QFrame#dropArea[dragActive="true"] QLabel#dropAreaLabel {
 
 
 def main() -> int:
+    multiprocessing.freeze_support()
+
     if sys.platform == "win32":
         try:
             import ctypes
@@ -240,8 +248,10 @@ def main() -> int:
     try:
         return app.exec()
     finally:
+        from open_anonymizer.services.backend_runtime import shutdown_backend_runtime
         from open_anonymizer.services.deduce_backend import (
             release_backend_resources,
         )
 
+        shutdown_backend_runtime()
         release_backend_resources()

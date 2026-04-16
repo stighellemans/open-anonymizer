@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import threading
 
 from PySide6.QtCore import QObject, Signal
@@ -12,6 +13,7 @@ from open_anonymizer.models import (
     ProcessBatchRequest,
     ProcessedDocument,
 )
+from open_anonymizer.services import backend_runtime
 from open_anonymizer.services.deduce_backend import warm_backend_for_settings
 from open_anonymizer.services.deidentifier import deidentify_document
 from open_anonymizer.services.importer import (
@@ -109,6 +111,31 @@ class BatchProcessorRunnable(_DaemonWorker):
         super().__init__(thread_name=f"open-anonymizer-batch-{request.context_generation}")
         self.request = request
         self.signals = BatchWorkerSignals()
+        self._backend_job_handle = None
+
+    def start(self) -> None:
+        if self._should_use_backend_runtime():
+            self._backend_job_handle = backend_runtime.submit_batch_job(
+                self.request,
+                completed=self._handle_backend_runtime_completed,
+                failed=self._handle_backend_runtime_failed,
+            )
+            return
+
+        super().start()
+
+    def cancel(self) -> None:
+        if self._backend_job_handle is not None:
+            self._backend_job_handle.cancel()
+            self._backend_job_handle = None
+            return
+
+        super().cancel()
+
+    def _should_use_backend_runtime(self) -> bool:
+        if os.getenv("OPEN_ANONYMIZER_DISABLE_BACKEND_RUNTIME", "").strip() == "1":
+            return False
+        return deidentify_document is _DEFAULT_DEIDENTIFY_DOCUMENT
 
     def _run(self) -> None:
         try:
@@ -148,6 +175,29 @@ class BatchProcessorRunnable(_DaemonWorker):
                     context_generation=self.request.context_generation,
                 )
             )
+
+    def _handle_backend_runtime_completed(self, response: dict[str, object]) -> None:
+        self._backend_job_handle = None
+        self.signals.completed.emit(
+            BatchProcessingResult(
+                processed_documents=response.get("processed_documents", {}),
+                errors=response.get("errors", {}),
+                document_ids=response.get("document_ids", []),
+                context_generation=response.get(
+                    "context_generation",
+                    self.request.context_generation,
+                ),
+            )
+        )
+
+    def _handle_backend_runtime_failed(self, message: str) -> None:
+        self._backend_job_handle = None
+        self.signals.failed.emit(
+            BatchProcessingFailure(
+                message=message,
+                context_generation=self.request.context_generation,
+            )
+        )
 
 
 class ImportDocumentRunnable(_DaemonWorker):
@@ -198,6 +248,32 @@ class BackendWarmupRunnable(_DaemonWorker):
         )
         self.request = request
         self.signals = BackendWarmupSignals()
+        self._backend_job_handle = None
+
+    def start(self) -> None:
+        if self._should_use_backend_runtime():
+            self._backend_job_handle = backend_runtime.submit_warmup_job(
+                settings=self.request.settings,
+                flags_key=self.request.flags_key,
+                completed=self._handle_backend_runtime_completed,
+                failed=self._handle_backend_runtime_failed,
+            )
+            return
+
+        super().start()
+
+    def cancel(self) -> None:
+        if self._backend_job_handle is not None:
+            self._backend_job_handle.cancel()
+            self._backend_job_handle = None
+            return
+
+        super().cancel()
+
+    def _should_use_backend_runtime(self) -> bool:
+        if os.getenv("OPEN_ANONYMIZER_DISABLE_BACKEND_RUNTIME", "").strip() == "1":
+            return False
+        return warm_backend_for_settings is _DEFAULT_WARM_BACKEND_FOR_SETTINGS
 
     def _run(self) -> None:
         try:
@@ -218,6 +294,23 @@ class BackendWarmupRunnable(_DaemonWorker):
 
         self.signals.completed.emit(
             BackendWarmupResult(flags_key=self.request.flags_key)
+        )
+
+    def _handle_backend_runtime_completed(self, response: dict[str, object]) -> None:
+        self._backend_job_handle = None
+        self.signals.completed.emit(
+            BackendWarmupResult(
+                flags_key=response.get("flags_key", self.request.flags_key)
+            )
+        )
+
+    def _handle_backend_runtime_failed(self, message: str) -> None:
+        self._backend_job_handle = None
+        self.signals.failed.emit(
+            BackendWarmupFailure(
+                message=message,
+                flags_key=self.request.flags_key,
+            )
         )
 
 
@@ -243,3 +336,7 @@ def _source_kind_for_path(path: Path) -> str:
     if suffix in {".html", ".htm"}:
         return "html"
     return "text_file"
+
+
+_DEFAULT_DEIDENTIFY_DOCUMENT = deidentify_document
+_DEFAULT_WARM_BACKEND_FOR_SETTINGS = warm_backend_for_settings

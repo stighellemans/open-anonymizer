@@ -45,7 +45,7 @@ from open_anonymizer.models import (
     ProcessBatchRequest,
     ProcessedDocument,
 )
-from open_anonymizer.services.deduce_backend import backend_is_ready
+from open_anonymizer.services.backend_runtime import backend_is_ready
 from open_anonymizer.services.exporter import export_processed_documents
 from open_anonymizer.services.workers import (
     BatchProcessingFailure,
@@ -104,6 +104,12 @@ PREPARING_BACKEND_TEXT = "Preparing anonymizer engine…"
 PREPARING_BACKEND_BADGE_TEXT = "Preparing"
 SCANNING_BADGE_TEXT = "Scanning"
 DEFAULT_MAX_CONCURRENT_IMPORTS = 1
+FILE_IMPORT_BLOCKED_MESSAGE = (
+    "File import is unavailable while the anonymizer engine is preparing."
+)
+DROP_AREA_PREPARING_MESSAGE = (
+    "Anonymizer engine is preparing. File import will re-enable shortly; text can still be pasted here."
+)
 
 
 def build_bug_report_link_button(
@@ -779,6 +785,11 @@ class MainWindow(QMainWindow):
         if not mime_data_has_local_paths(event.mimeData()):
             return False
 
+        if self._is_file_import_blocked():
+            self._set_file_drag_active(False)
+            event.ignore()
+            return True
+
         self._set_file_drag_active(True)
         event.acceptProposedAction()
         return True
@@ -789,6 +800,11 @@ class MainWindow(QMainWindow):
             return False
 
         self._set_file_drag_active(False)
+        if self._is_file_import_blocked():
+            event.ignore()
+            self._notify_file_import_blocked()
+            return True
+
         self.handle_dropped_paths(local_paths)
         event.acceptProposedAction()
         return True
@@ -1138,6 +1154,7 @@ class MainWindow(QMainWindow):
     def _background_warmup_can_start(self) -> bool:
         return (
             not self.processing_active
+            and not self._has_pending_import_work()
             and not self.paste_processing_active
             and self.paste_processing_worker is None
             and not self.paste_processing_timer.isActive()
@@ -1304,6 +1321,11 @@ class MainWindow(QMainWindow):
         self.output_view.set_processing_badge_text(badge_text)
         self.output_view.set_processing_active(active)
 
+    def _set_output_text(self, text: str) -> None:
+        if self.output_view.toPlainText() == text:
+            return
+        self.output_view.setPlainText(text)
+
     def _backend_preparation_elapsed_text(self) -> str:
         started_at = self._backend_preparation_started_at
         if started_at is None:
@@ -1314,7 +1336,7 @@ class MainWindow(QMainWindow):
         self.output_view.setPlaceholderText("")
         self.output_view.set_placeholder_references({})
         elapsed_text = self._backend_preparation_elapsed_text()
-        self.output_view.setPlainText(PREPARING_BACKEND_TEXT)
+        self._set_output_text(PREPARING_BACKEND_TEXT)
         self._set_output_processing_state(
             True,
             badge_text=PREPARING_BACKEND_BADGE_TEXT,
@@ -1349,6 +1371,10 @@ class MainWindow(QMainWindow):
             self.refresh_actions()
 
     def import_files(self) -> None:
+        if self._is_file_import_blocked():
+            self._notify_file_import_blocked()
+            return
+
         filenames, _ = QFileDialog.getOpenFileNames(
             self,
             "Import Documents",
@@ -1370,6 +1396,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Loaded pasted text.", 3000)
 
     def handle_dropped_paths(self, paths: list[Path]) -> None:
+        if self._is_file_import_blocked():
+            self._notify_file_import_blocked()
+            return
+
         placeholder_documents = [
             ImportedDocument(
                 id=self._new_document_id(),
@@ -1697,8 +1727,26 @@ class MainWindow(QMainWindow):
             self.document_list_spinner_timer.stop()
 
     def _set_document_status(self, text: str, *, tooltip: str = "") -> None:
+        if (
+            self.document_status_label.text() == text
+            and self.document_status_label.toolTip() == tooltip
+        ):
+            return
         self.document_status_label.setText(text)
         self.document_status_label.setToolTip(tooltip)
+
+    def _is_file_import_blocked(self) -> bool:
+        return self._is_backend_preparation_pending()
+
+    def _notify_file_import_blocked(self) -> None:
+        self.statusBar().showMessage(FILE_IMPORT_BLOCKED_MESSAGE, 3000)
+
+    def _refresh_file_import_state(self) -> None:
+        blocked = self._is_file_import_blocked()
+        self.drop_area.set_file_import_enabled(
+            not blocked,
+            disabled_message=DROP_AREA_PREPARING_MESSAGE if blocked else "",
+        )
 
     def _placeholder_help_tooltip(
         self, placeholder_references: dict[str, tuple[str, ...]]
@@ -1734,12 +1782,12 @@ class MainWindow(QMainWindow):
                 badge_text=SCANNING_BADGE_TEXT,
             )
             self.output_view.set_placeholder_references({})
-            self.output_view.clear()
+            self._set_output_text("")
             return
 
         if document.status == "processing" and document.raw_text is None:
             self.output_view.setPlaceholderText("")
-            self.output_view.clear()
+            self._set_output_text("")
             self.output_view.set_placeholder_references({})
             self._set_output_processing_state(
                 True,
@@ -1757,7 +1805,7 @@ class MainWindow(QMainWindow):
             self.output_view.set_placeholder_references(
                 processed.placeholder_references
             )
-            self.output_view.setPlainText(processed.output_text)
+            self._set_output_text(processed.output_text)
             warnings_text = self._warnings_text(processed.warnings)
             status_text = (
                 f"{document.display_name}. {warnings_text}"
@@ -1778,7 +1826,7 @@ class MainWindow(QMainWindow):
                 badge_text=SCANNING_BADGE_TEXT,
             )
             self.output_view.set_placeholder_references({})
-            self.output_view.setPlainText(document.raw_text or "")
+            self._set_output_text(document.raw_text or "")
             error_message = document.error_message or "Could not be processed."
             self._set_document_status(f"{document.display_name}: {error_message}")
             return
@@ -1787,7 +1835,7 @@ class MainWindow(QMainWindow):
             self._show_backend_preparing_output()
             return
 
-        self.output_view.setPlainText(document.raw_text or "")
+        self._set_output_text(document.raw_text or "")
         self.output_view.set_placeholder_references({})
         if document.status == "processing":
             self._set_output_processing_state(
@@ -1812,7 +1860,7 @@ class MainWindow(QMainWindow):
             self.output_view.set_placeholder_references(
                 processed.placeholder_references
             )
-            self.output_view.setPlainText(processed.output_text)
+            self._set_output_text(processed.output_text)
             warnings_text = self._warnings_text(processed.warnings)
             status_text = (
                 f"Pasted text. {warnings_text}" if warnings_text else "Pasted text"
@@ -1825,7 +1873,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.output_view.setPlainText(pasted_text)
+        if self._is_backend_preparation_pending():
+            self._show_backend_preparing_output()
+            return
+
+        self._set_output_text(pasted_text)
         self.output_view.set_placeholder_references({})
 
         if self.paste_error_message:
@@ -1836,10 +1888,6 @@ class MainWindow(QMainWindow):
             self._set_document_status(
                 f"Pasted text: {self.paste_error_message}".strip()
             )
-            return
-
-        if self._is_backend_preparation_pending():
-            self._show_backend_preparing_output()
             return
 
         if self.paste_processing_active:
@@ -2140,6 +2188,7 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(export_enabled)
         self.export_original_action.setEnabled(export_enabled)
         self.export_text_action.setEnabled(export_enabled)
+        self._refresh_file_import_state()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QStyle,
     QStyleOptionSlider,
@@ -384,7 +385,11 @@ class DateShiftSlider(QWidget):
         self._slider.setPageStep(28)
         self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self._slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._slider.setFixedWidth(220)
+        self._slider.setMinimumWidth(220)
+        self._slider.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self._slider.valueChanged.connect(self._handle_value_changed)
         slider_layout.addWidget(self._slider)
 
@@ -1017,7 +1022,7 @@ class AnonymizationDialog(QDialog):
         layout.setSpacing(4)
 
         layout.addWidget(self._field_label("Date shift (days)"))
-        layout.addWidget(self.date_shift_days_slider, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.date_shift_days_slider)
         return row
 
     def _row_divider(self) -> QFrame:
