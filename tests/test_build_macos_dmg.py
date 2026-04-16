@@ -129,3 +129,30 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
         ["Rez", "-append", str(icon_resource_path), "-o", str(output_path)],
         ["SetFile", "-a", "C", str(output_path)],
     ]
+
+
+def test_detach_image_retries_then_forces_on_resource_busy(monkeypatch, tmp_path: Path) -> None:
+    build_macos_dmg = _load_build_macos_dmg_module()
+    mountpoint = tmp_path / "mount"
+    mountpoint.mkdir()
+
+    commands: list[list[str]] = []
+    sleep_calls: list[float] = []
+
+    def fake_run(command, check=True, stdout=None):
+        commands.append(command)
+        if command == ["hdiutil", "detach", str(mountpoint)]:
+            raise build_macos_dmg.subprocess.CalledProcessError(16, command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(build_macos_dmg.subprocess, "run", fake_run)
+    monkeypatch.setattr(build_macos_dmg.time, "sleep", sleep_calls.append)
+
+    build_macos_dmg._detach_image(mountpoint, retries=2, retry_delay_seconds=0.25)
+
+    assert commands == [
+        ["hdiutil", "detach", str(mountpoint)],
+        ["hdiutil", "detach", str(mountpoint)],
+        ["hdiutil", "detach", str(mountpoint), "-force"],
+    ]
+    assert sleep_calls == [0.25]

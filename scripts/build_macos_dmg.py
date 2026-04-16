@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -72,6 +73,21 @@ def _stamp_dmg_icon(dmg_path: Path, icon_path: Path, temp_dir: Path) -> None:
     _run(["SetFile", "-a", "C", str(dmg_path)])
 
 
+def _detach_image(mountpoint: Path, *, retries: int = 4, retry_delay_seconds: float = 1.0) -> None:
+    for attempt in range(retries):
+        try:
+            _run(["hdiutil", "detach", str(mountpoint)])
+            return
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 16:
+                raise
+            if attempt == retries - 1:
+                break
+            time.sleep(retry_delay_seconds)
+
+    _run(["hdiutil", "detach", str(mountpoint), "-force"])
+
+
 def build_dmg(
     *,
     app_path: Path,
@@ -125,7 +141,7 @@ def build_dmg(
             _apply_volume_icon(mountpoint, icon_path)
         finally:
             if attached:
-                _run(["hdiutil", "detach", str(mountpoint)])
+                _detach_image(mountpoint)
 
         _run(
             [
