@@ -23,26 +23,6 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Resolve belgian-deduce cache path
-        id: deduce-cache
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            echo "path=$HOME/AppData/Local/open-anonymizer/belgian_deduce" >> "$GITHUB_OUTPUT"
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            echo "path=$HOME/Library/Caches/open-anonymizer/belgian_deduce" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=${XDG_CACHE_HOME:-$HOME/.cache}/open-anonymizer/belgian_deduce" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Restore belgian-deduce cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.deduce-cache.outputs.path }}
-          key: belgian-deduce-${{ runner.os }}-py3.9-${{ hashFiles('pyproject.toml', 'uv.lock') }}
-          restore-keys: |
-            belgian-deduce-${{ runner.os }}-py3.9-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

@@ -12,6 +12,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DIST_DIR = REPO_ROOT / "dist"
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from open_anonymizer.services.ocr_runtime import BUNDLED_TESSERACT_DIRNAME
@@ -42,6 +43,13 @@ DEFAULT_EXCLUDED_PYSIDE6_MODULES = (
     "PySide6.QtVirtualKeyboard",
 )
 NESTED_LOOKUP_CACHE_FRAGMENT = "data/lookup/cache/cache"
+BUNDLED_LOOKUP_CACHE_RELATIVE_PATH = Path(
+    "belgian_deduce",
+    "data",
+    "lookup",
+    "cache",
+    "lookup_structs.pickle",
+)
 
 
 def _pyinstaller_mapping(
@@ -102,6 +110,35 @@ def _collect_package_data_args(
         )
 
     return args
+
+
+def _bundled_lookup_cache_paths() -> list[Path]:
+    if sys.platform == "darwin":
+        return [
+            DIST_DIR
+            / "OpenAnonymizer.app"
+            / "Contents"
+            / "Resources"
+            / BUNDLED_LOOKUP_CACHE_RELATIVE_PATH
+        ]
+
+    return [
+        DIST_DIR / "OpenAnonymizer" / "_internal" / BUNDLED_LOOKUP_CACHE_RELATIVE_PATH
+    ]
+
+
+def verify_bundled_lookup_cache() -> Path:
+    candidates = _bundled_lookup_cache_paths()
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    searched_locations = "\n".join(f"- {candidate}" for candidate in candidates)
+    raise RuntimeError(
+        "The packaged belgian-deduce lookup cache is missing from the PyInstaller output. "
+        "The installer would ship without the prebuilt cache.\n"
+        f"Searched:\n{searched_locations}"
+    )
 
 
 def _render_icon_image(icon_path: Path, size: int):
@@ -324,6 +361,8 @@ def main() -> int:
 
     print("Bundling Tesseract runtime from:", runtime_dir if runtime_dir.exists() else "not found")
     PyInstaller.__main__.run(pyinstaller_args)
+    bundled_lookup_cache = verify_bundled_lookup_cache()
+    print("Bundled belgian-deduce lookup cache:", bundled_lookup_cache)
     return 0
 
 

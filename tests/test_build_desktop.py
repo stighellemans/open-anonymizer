@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,6 +112,48 @@ def test_build_pyinstaller_args_adds_macos_options_only_on_macos(monkeypatch, tm
     assert "--osx-bundle-identifier" not in windows_args
     assert "--icon" in windows_args
     assert str(tmp_path / "OpenAnonymizer.ico") in windows_args
+
+
+def test_verify_bundled_lookup_cache_uses_macos_app_resources(monkeypatch, tmp_path: Path) -> None:
+    build_desktop = _load_build_desktop_module()
+    monkeypatch.setattr(build_desktop, "DIST_DIR", tmp_path / "dist")
+    monkeypatch.setattr(build_desktop.sys, "platform", "darwin")
+    cache_file = (
+        build_desktop.DIST_DIR
+        / "OpenAnonymizer.app"
+        / "Contents"
+        / "Resources"
+        / build_desktop.BUNDLED_LOOKUP_CACHE_RELATIVE_PATH
+    )
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(b"cache")
+
+    assert build_desktop.verify_bundled_lookup_cache() == cache_file
+
+
+def test_verify_bundled_lookup_cache_uses_windows_internal_dir(monkeypatch, tmp_path: Path) -> None:
+    build_desktop = _load_build_desktop_module()
+    monkeypatch.setattr(build_desktop, "DIST_DIR", tmp_path / "dist")
+    monkeypatch.setattr(build_desktop.sys, "platform", "win32")
+    cache_file = (
+        build_desktop.DIST_DIR
+        / "OpenAnonymizer"
+        / "_internal"
+        / build_desktop.BUNDLED_LOOKUP_CACHE_RELATIVE_PATH
+    )
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(b"cache")
+
+    assert build_desktop.verify_bundled_lookup_cache() == cache_file
+
+
+def test_verify_bundled_lookup_cache_raises_when_missing(monkeypatch, tmp_path: Path) -> None:
+    build_desktop = _load_build_desktop_module()
+    monkeypatch.setattr(build_desktop, "DIST_DIR", tmp_path / "dist")
+    monkeypatch.setattr(build_desktop.sys, "platform", "win32")
+
+    with pytest.raises(RuntimeError, match="lookup cache is missing"):
+        build_desktop.verify_bundled_lookup_cache()
 
 
 def test_build_windows_ico_embeds_multiple_icon_sizes(monkeypatch, tmp_path: Path) -> None:
