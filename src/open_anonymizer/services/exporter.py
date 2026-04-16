@@ -135,16 +135,40 @@ def _export_stem(
     return sanitize_stem(stem)
 
 
+def _predicted_export_name(
+    document: ImportedDocument,
+    anonymization_settings: AnonymizationSettings,
+    export_mode: ExportMode,
+) -> str:
+    if document.source_kind == "paste":
+        return document.display_name
+
+    export_suffix = ".txt" if export_mode == "text_files" else _export_suffix_for_document(document)
+    return f"{_export_stem(document, anonymization_settings)}{export_suffix}"
+
+
 def _report_display_name(
     document: ImportedDocument,
     anonymization_settings: AnonymizationSettings,
+    export_mode: ExportMode = "original_formats",
+    export_name: str | None = None,
 ) -> str:
-    if not anonymization_settings.deidentify_filenames or document.source_kind == "paste":
-        return document.display_name
+    if export_name is None:
+        if not anonymization_settings.deidentify_filenames or document.source_kind == "paste":
+            return document.display_name
+        export_name = _predicted_export_name(
+            document,
+            anonymization_settings,
+            export_mode,
+        )
 
-    suffix = _display_suffix(document)
-    stem = _export_stem(document, anonymization_settings)
-    return f"{stem}{suffix}"
+    if not anonymization_settings.deidentify_filenames or document.source_kind == "paste":
+        return export_name
+
+    if export_name == document.display_name:
+        return export_name
+
+    return f"{export_name} ({document.display_name})"
 
 
 def _date_shift_report_lines(
@@ -177,7 +201,7 @@ def _smart_placeholder_report_lines(
     lines = ["", "Smart placeholder mappings (original => replacement)"]
     has_mappings = False
 
-    for _, export_name, processed_document in exported_documents:
+    for document, export_name, processed_document in exported_documents:
         pseudonym_lines: list[str] = []
         for replacement, originals in processed_document.placeholder_references.items():
             if PLACEHOLDER_PATTERN.fullmatch(replacement):
@@ -189,12 +213,39 @@ def _smart_placeholder_report_lines(
         if not pseudonym_lines:
             continue
 
+        if has_mappings:
+            lines.append("")
+
         has_mappings = True
-        lines.append(f"{export_name}")
+        lines.append(
+            _report_display_name(
+                document,
+                anonymization_settings,
+                export_name=export_name,
+            )
+        )
         lines.extend(pseudonym_lines)
 
     if not has_mappings:
         lines.append("- None")
+
+    return lines
+
+
+def _exported_report_lines(
+    exported_documents: list[tuple[ImportedDocument, str, ProcessedDocument]],
+    anonymization_settings: AnonymizationSettings,
+) -> list[str]:
+    lines = ["", "Exported"]
+
+    if not exported_documents:
+        lines.append("- None")
+        return lines
+
+    for document, export_name, _ in exported_documents:
+        lines.append(
+            f"- {_report_display_name(document, anonymization_settings, export_name=export_name)}"
+        )
 
     return lines
 
@@ -223,7 +274,7 @@ def export_processed_documents(
                 skipped_count += 1
                 reason = document.error_message or "Document was not processed successfully."
                 skipped_lines.append(
-                    f"- {_report_display_name(document, anonymization_settings)}: {reason}"
+                    f"- {_report_display_name(document, anonymization_settings, export_mode)}: {reason}"
                 )
                 continue
 
@@ -257,6 +308,7 @@ def export_processed_documents(
             "",
             f"Exported documents: {exported_count}",
             f"Skipped documents: {skipped_count}",
+            *_exported_report_lines(exported_documents, anonymization_settings),
             "",
             "Skipped",
         ]

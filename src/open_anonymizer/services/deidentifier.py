@@ -569,18 +569,6 @@ class _HtmlDeidentifier(HTMLParser):
 def _is_html_document(document: ImportedDocument) -> bool:
     return document.source_kind == "html"
 
-
-def document_smart_key(document: ImportedDocument) -> str:
-    digest = hashlib.sha256()
-    digest.update(document.source_kind.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(document.display_name.encode("utf-8"))
-    digest.update(b"\0")
-    if document.raw_text:
-        digest.update(document.raw_text.encode("utf-8"))
-    return digest.hexdigest()
-
-
 def _normalize_filename_for_deidentification(value: str) -> str:
     return re.sub(r"(?<!\d)[._-]+|[._-]+(?!\d)", " ", value)
 
@@ -618,10 +606,7 @@ def deidentify_filename_stem_result(
 
     normalized_value = _normalize_filename_for_deidentification(value)
     smart_pseudonymizer = (
-        SmartPseudonymizer(
-            anonymization_settings,
-            document_key=document_smart_key(document),
-        )
+        SmartPseudonymizer(anonymization_settings)
         if anonymization_settings.mode == "smart_pseudonyms" and document is not None
         else None
     )
@@ -667,10 +652,7 @@ def deidentify_document(
         raise ProcessingError("No text content found to de-identify.")
 
     smart_pseudonymizer = (
-        SmartPseudonymizer(
-            anonymization_settings,
-            document_key=document_smart_key(document),
-        )
+        SmartPseudonymizer(anonymization_settings)
         if anonymization_settings.mode == "smart_pseudonyms"
         else None
     )

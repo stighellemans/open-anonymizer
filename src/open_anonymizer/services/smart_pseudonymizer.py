@@ -245,12 +245,8 @@ class SmartPseudonymizer:
     def __init__(
         self,
         anonymization_settings: AnonymizationSettings,
-        *,
-        document_key: str,
     ) -> None:
         self.anonymization_settings = anonymization_settings
-        self.document_key = document_key
-        self._patient_first_name, self._patient_last_name = self._build_patient_surrogate()
         self._person_replacements: dict[tuple[str, int], str] = {}
         self._institution_replacements: dict[str, str] = {}
         self._date_shift_days, self._uses_document_date_fallback = self._build_date_shift()
@@ -345,9 +341,9 @@ class SmartPseudonymizer:
             text, replacements = _replace_literal(
                 text,
                 literal,
-                lambda matched, patient_literal=literal: self._patient_literal_replacement(
+                lambda matched, source_text=literal: self._generic_person_replacement(
                     matched,
-                    patient_literal,
+                    source_text,
                 ),
             )
             _append_literal_references(replacement_references, replacements)
@@ -395,54 +391,14 @@ class SmartPseudonymizer:
             replaced_dates,
         )
 
-    def _build_patient_surrogate(self) -> tuple[str, str]:
-        if not any(
-            [
-                self.anonymization_settings.first_name.strip(),
-                self.anonymization_settings.last_name.strip(),
-                self.anonymization_settings.birthdate,
-            ]
-        ):
-            return "", ""
-
-        key = self._patient_anchor_key()
-        token_count = 2 if self.anonymization_settings.last_name.strip() else 1
-        components = _generate_person_components(
-            self._rng("patient-name", key),
-            token_count=token_count,
-        )
-        first_name = components[0] if components else ""
-        last_name = components[-1] if token_count > 1 else ""
-
-        original_full = _normalize_key(
-            f"{self.anonymization_settings.first_name} {self.anonymization_settings.last_name}"
-        )
-        for attempt in range(6):
-            candidate_full = _normalize_key(" ".join(part for part in [first_name, last_name] if part))
-            if candidate_full and candidate_full != original_full:
-                break
-            components = _generate_person_components(
-                self._rng("patient-name", key, str(attempt + 1)),
-                token_count=token_count,
-            )
-            first_name = components[0] if components else ""
-            last_name = components[-1] if token_count > 1 else ""
-
-        return first_name, last_name
-
     def _build_date_shift(self) -> tuple[int, bool]:
         date_shift_days, uses_document_fallback = effective_date_shift_days(
             self.anonymization_settings,
-            document_key=self.document_key,
         )
         return date_shift_days or 0, uses_document_fallback
 
-    def _patient_anchor_key(self) -> str:
-        return patient_anchor_key(self.anonymization_settings)
-
     def _person_replacement(self, original_text: str, tag: str) -> str:
-        if tag == "patient":
-            return self._patient_literal_replacement(original_text, original_text)
+        del tag
         return self._generic_person_replacement(original_text, original_text)
 
     def _generic_person_replacement(self, original_text: str, source_text: str) -> str:
@@ -472,56 +428,6 @@ class SmartPseudonymizer:
         if title_prefix:
             return f"{title_prefix}{_match_case_style(replacement, body_source)}"
         return _match_case_style(replacement, original_text)
-
-    def _patient_literal_replacement(self, original_text: str, patient_literal: str) -> str:
-        title_prefix, literal_body = _split_person_title_prefix(patient_literal)
-        original_title_prefix, original_body = _split_person_title_prefix(original_text)
-        if not title_prefix:
-            title_prefix = original_title_prefix
-        body_text = literal_body or original_body or patient_literal
-        normalized_literal = _normalize_key(body_text)
-        normalized_first = _normalize_key(self.anonymization_settings.first_name)
-        normalized_last = _normalize_key(self.anonymization_settings.last_name)
-        normalized_full = _normalize_key(
-            f"{self.anonymization_settings.first_name} {self.anonymization_settings.last_name}"
-        )
-
-        if normalized_literal and normalized_literal == normalized_first and self._patient_first_name:
-            return _apply_person_title_prefix(
-                title_prefix,
-                self._patient_first_name,
-                original_body or original_text,
-            )
-        if normalized_literal and normalized_literal == normalized_last and self._patient_last_name:
-            return _apply_person_title_prefix(
-                title_prefix,
-                self._patient_last_name,
-                original_body or original_text,
-            )
-
-        full_name = " ".join(
-            part for part in [self._patient_first_name, self._patient_last_name] if part
-        ).strip()
-        if normalized_literal and normalized_literal == normalized_full and full_name:
-            return _apply_person_title_prefix(
-                title_prefix,
-                full_name,
-                original_body or original_text,
-            )
-
-        original_body_text = original_body or original_text
-        if original_body_text.strip().count(" ") == 0:
-            fallback = self._patient_first_name or self._patient_last_name or full_name
-        else:
-            fallback = full_name or self._patient_first_name or self._patient_last_name
-
-        if not fallback:
-            return original_text
-        return _apply_person_title_prefix(
-            title_prefix,
-            fallback,
-            original_body_text,
-        )
 
     def _institution_replacement(self, original_text: str, tag: str) -> str:
         del tag
@@ -578,33 +484,20 @@ def format_date_shift_days(days: int) -> str:
 
 
 @lru_cache(maxsize=1)
-def _session_auto_date_shift_days() -> int:
-    rng = random.SystemRandom()
+def _auto_date_shift_days() -> int:
+    rng = _stable_rng("date-shift")
     weeks = rng.randint(6, 104)
     direction = -1 if rng.random() < 0.5 else 1
     return direction * weeks * 7
 
 
-def patient_anchor_key(anonymization_settings: AnonymizationSettings) -> str:
-    parts = [
-        anonymization_settings.first_name.strip(),
-        anonymization_settings.last_name.strip(),
-    ]
-    if anonymization_settings.birthdate:
-        parts.append(anonymization_settings.birthdate.isoformat())
-    return "|".join(part for part in parts if part)
-
-
 def effective_date_shift_days(
     anonymization_settings: AnonymizationSettings,
-    *,
-    document_key: str | None = None,
 ) -> tuple[int | None, bool]:
-    del document_key
     if anonymization_settings.date_shift_days is not None:
         return anonymization_settings.date_shift_days, False
 
-    return _session_auto_date_shift_days(), False
+    return _auto_date_shift_days(), False
 
 
 def _stable_rng(namespace: str, *parts: str) -> random.Random:

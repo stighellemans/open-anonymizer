@@ -6,11 +6,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 import importlib.resources as importlib_resources
 import json
-import os
 from pathlib import Path
+import pickle
 import re
-import shutil
-import sys
 import threading
 from typing import Any
 
@@ -113,21 +111,6 @@ class _SharedBackendAssets:
     lookup_structs: Any
 
 
-def _backend_cache_dir() -> Path:
-    if sys.platform == "darwin":
-        cache_root = Path.home() / "Library" / "Caches"
-    elif os.name == "nt":
-        cache_root = Path(
-            os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
-        )
-    else:
-        cache_root = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
-
-    cache_dir = cache_root / "open-anonymizer" / "belgian_deduce"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
-
-
 def _lookup_data_dir() -> Path:
     import belgian_deduce
 
@@ -148,41 +131,23 @@ def _bundled_lookup_cache_file() -> Path | None:
     return bundled_cache_dir / "cache" / "lookup_structs.pickle"
 
 
-def _user_lookup_cache_file(cache_dir: Path) -> Path:
-    return cache_dir / "cache" / "lookup_structs.pickle"
-
-
-def _sync_bundled_lookup_cache(cache_dir: Path) -> None:
+def _load_bundled_lookup_structs(deduce_version: str) -> Any | None:
     bundled_cache_file = _bundled_lookup_cache_file()
     if bundled_cache_file is None:
-        return
+        return None
 
-    user_cache_file = _user_lookup_cache_file(cache_dir)
-    if user_cache_file.exists():
-        bundled_stat = bundled_cache_file.stat()
-        user_stat = user_cache_file.stat()
-        if (
-            user_stat.st_size == bundled_stat.st_size
-            and user_stat.st_mtime_ns == bundled_stat.st_mtime_ns
-        ):
-            return
-
-    user_cache_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary_cache_file = user_cache_file.with_suffix(f"{user_cache_file.suffix}.tmp")
     try:
-        shutil.copy2(bundled_cache_file, temporary_cache_file)
-        temporary_cache_file.replace(user_cache_file)
-    finally:
-        if temporary_cache_file.exists():
-            temporary_cache_file.unlink()
+        with bundled_cache_file.open("rb") as handle:
+            cache = pickle.load(handle)
+    except Exception:
+        return None
 
+    if not isinstance(cache, dict):
+        return None
+    if cache.get("deduce_version") != deduce_version:
+        return None
 
-def _lookup_cache_dir() -> Path:
-    cache_dir = _backend_cache_dir()
-    # Package timestamps can invalidate a bundled cache unexpectedly, so keep a
-    # synced copy in the user cache and load from there.
-    _sync_bundled_lookup_cache(cache_dir)
-    return cache_dir
+    return cache.get("lookup_structs")
 
 
 def _dedupe_nonempty(items: list[str]) -> list[str]:
@@ -335,14 +300,18 @@ def _build_backend_assets() -> _SharedBackendAssets:
     from belgian_deduce.lookup_structs import get_lookup_structs
 
     lookup_data_path = _lookup_data_dir()
-    cache_path = _lookup_cache_dir()
+    cache_path = lookup_data_path
     tokenizer = Deduce._initialize_tokenizer(lookup_data_path)
-    lookup_structs = get_lookup_structs(
-        lookup_path=lookup_data_path,
-        cache_path=cache_path,
-        tokenizer=tokenizer,
-        package_version=package_version,
-    )
+    lookup_structs = _load_bundled_lookup_structs(package_version)
+    if lookup_structs is None:
+        lookup_structs = get_lookup_structs(
+            lookup_path=lookup_data_path,
+            cache_path=cache_path,
+            tokenizer=tokenizer,
+            deduce_version=package_version,
+            build=True,
+            save_cache=False,
+        )
     return _SharedBackendAssets(
         lookup_data_path=lookup_data_path,
         cache_path=cache_path,

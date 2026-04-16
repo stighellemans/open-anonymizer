@@ -57,6 +57,9 @@ def test_export_processed_documents_writes_zip_and_report(tmp_path: Path) -> Non
         assert "pasted-text-001.txt" in names
         report = archive.read("export-report.txt").decode("utf-8")
         assert "Date shift: Not used" in report
+        assert "Exported" in report
+        assert "- report.txt" in report
+        assert "- pasted-text-001.txt" in report
         assert "scan.pdf" in report
         assert "PDF does not contain extractable text." in report
 
@@ -136,6 +139,91 @@ def test_export_processed_documents_report_includes_smart_placeholder_mappings(
         assert "[IDENTIFIER-1]" not in report
 
 
+def test_export_processed_documents_report_separates_smart_placeholder_documents(
+    tmp_path: Path,
+) -> None:
+    documents = [
+        ImportedDocument(
+            id="file-1",
+            source_kind="text_file",
+            display_name="first.txt",
+            path=tmp_path / "first.txt",
+            raw_text="first input",
+            status="ready",
+        ),
+        ImportedDocument(
+            id="file-2",
+            source_kind="text_file",
+            display_name="second.txt",
+            path=tmp_path / "second.txt",
+            raw_text="second input",
+            status="ready",
+        ),
+    ]
+    processed = {
+        "file-1": ProcessedDocument(
+            document_id="file-1",
+            output_text="Marie Peeters",
+            placeholder_references={"Marie Peeters": ("Jean Dupont",)},
+        ),
+        "file-2": ProcessedDocument(
+            document_id="file-2",
+            output_text="Ziekenhuis Horizon",
+            placeholder_references={"Ziekenhuis Horizon": ("UZ Leuven",)},
+        ),
+    }
+    zip_path = tmp_path / "export.zip"
+
+    export_processed_documents(
+        documents,
+        processed,
+        zip_path,
+        anonymization_settings=AnonymizationSettings(mode="smart_pseudonyms"),
+    )
+
+    with ZipFile(zip_path) as archive:
+        report = archive.read("export-report.txt").decode("utf-8")
+        assert "first.txt\n- Jean Dupont => Marie Peeters\n\nsecond.txt\n- UZ Leuven => Ziekenhuis Horizon" in report
+
+
+def test_export_processed_documents_report_shows_new_and_original_filename_when_deidentified(
+    tmp_path: Path,
+) -> None:
+    document_path = tmp_path / "Jean_Dupont_report.txt"
+    documents = [
+        ImportedDocument(
+            id="file-1",
+            source_kind="text_file",
+            display_name=document_path.name,
+            path=document_path,
+            raw_text="input",
+            status="ready",
+        ),
+    ]
+    processed = {
+        "file-1": ProcessedDocument(
+            document_id="file-1",
+            output_text="[PATIENT]",
+        ),
+    }
+    zip_path = tmp_path / "export.zip"
+
+    export_processed_documents(
+        documents,
+        processed,
+        zip_path,
+        anonymization_settings=AnonymizationSettings(
+            first_name="Jean",
+            last_name="Dupont",
+        ),
+    )
+
+    with ZipFile(zip_path) as archive:
+        report = archive.read("export-report.txt").decode("utf-8")
+        expected_hash = hashlib.sha256(b"input").hexdigest()[:10]
+        assert f"{expected_hash}_deid.txt (Jean_Dupont_report.txt)" in report
+
+
 def test_export_processed_documents_report_lists_per_document_auto_date_shifts(
     tmp_path: Path,
     monkeypatch,
@@ -181,6 +269,43 @@ def test_export_processed_documents_report_lists_per_document_auto_date_shifts(
         report = archive.read("export-report.txt").decode("utf-8")
         auto_shift, _ = effective_date_shift_days(settings)
         assert f"Date shift: {auto_shift:+d} {'day' if abs(auto_shift or 0) == 1 else 'days'} (auto)" in report
+
+
+def test_export_processed_documents_report_predicts_text_mode_name_for_skipped_deidentified_files(
+    tmp_path: Path,
+) -> None:
+    document_path = tmp_path / "Jean_Dupont_report.pdf"
+    documents = [
+        ImportedDocument(
+            id="bad-1",
+            source_kind="pdf",
+            display_name=document_path.name,
+            path=document_path,
+            status="error",
+            error_message="PDF does not contain extractable text.",
+        ),
+    ]
+    processed: dict[str, ProcessedDocument] = {}
+    zip_path = tmp_path / "export.zip"
+
+    export_processed_documents(
+        documents,
+        processed,
+        zip_path,
+        export_mode="text_files",
+        anonymization_settings=AnonymizationSettings(
+            first_name="Jean",
+            last_name="Dupont",
+        ),
+    )
+
+    with ZipFile(zip_path) as archive:
+        report = archive.read("export-report.txt").decode("utf-8")
+        expected_hash = hashlib.sha256(document_path.name.encode("utf-8")).hexdigest()[:10]
+        assert (
+            f"{expected_hash}_deid.txt (Jean_Dupont_report.pdf): "
+            "PDF does not contain extractable text."
+        ) in report
 
 
 def test_export_processed_documents_keeps_html_extension_for_html_inputs(tmp_path: Path) -> None:

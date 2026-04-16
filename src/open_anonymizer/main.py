@@ -117,6 +117,23 @@ QLabel#windowSubtitle {
     color: #52606d;
     margin-bottom: 2px;
 }
+QToolButton#headerInfoButton {
+    background: #fffdf9;
+    color: #1f4d45;
+    border: 1px solid #c8beb2;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
+    padding: 0;
+}
+QToolButton#headerInfoButton:hover:!disabled {
+    background: #f6efe6;
+    color: #163b35;
+}
 QLabel#headerIcon {
     background: #1f4d45;
     border: 1px solid #163b35;
@@ -134,7 +151,7 @@ QStatusBar {
 QStatusBar::item {
     border: none;
 }
-QToolButton#bugReportLinkButton {
+QToolButton#bugReportLinkButton, QToolButton#appInfoBugReportButton, QToolButton#appInfoBelgianDeduceButton, QToolButton#appInfoOriginalDeduceButton {
     background: transparent;
     color: #1f4d45;
     border: none;
@@ -142,12 +159,38 @@ QToolButton#bugReportLinkButton {
     padding: 0;
     margin: 0 2px 0 6px;
 }
-QToolButton#bugReportLinkButton:hover:!disabled {
+QToolButton#bugReportLinkButton:hover:!disabled, QToolButton#appInfoBugReportButton:hover:!disabled, QToolButton#appInfoBelgianDeduceButton:hover:!disabled, QToolButton#appInfoOriginalDeduceButton:hover:!disabled {
     background: transparent;
     color: #163b35;
 }
-QToolButton#bugReportLinkButton:pressed {
+QToolButton#bugReportLinkButton:pressed, QToolButton#appInfoBugReportButton:pressed, QToolButton#appInfoBelgianDeduceButton:pressed, QToolButton#appInfoOriginalDeduceButton:pressed {
     background: transparent;
+}
+QDialog#appInfoDialog {
+    background: #fbfaf8;
+}
+QLabel#appInfoTitle {
+    font-size: 20px;
+    font-weight: 700;
+}
+QLabel#appInfoBody {
+    color: #3f4c59;
+}
+QLabel#appInfoMeta {
+    color: #52606d;
+    font-weight: 600;
+}
+QFrame#appInfoWarning {
+    background: #fff6ed;
+    border: 1px solid #ead6bf;
+    border-radius: 12px;
+}
+QLabel#appInfoWarningTitle {
+    color: #8a3b12;
+    font-weight: 700;
+}
+QLabel#appInfoWarningBody {
+    color: #8a3b12;
 }
 QScrollArea#anonymizationSummaryScroll {
     border: none;
@@ -161,9 +204,15 @@ QFrame#dropArea {
     border-radius: 14px;
     background: #fdfbf7;
 }
+QFrame#dropArea QLabel#dropAreaLabel {
+    background: transparent;
+}
 QFrame#dropArea[dragActive="true"] {
     border-color: #1f4d45;
     background: #eef6f2;
+}
+QFrame#dropArea[dragActive="true"] QLabel#dropAreaLabel {
+    background: transparent;
 }
 """
 

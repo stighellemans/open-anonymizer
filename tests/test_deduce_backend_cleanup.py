@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 import sys
 import threading
 from types import SimpleNamespace
@@ -126,53 +127,49 @@ def test_backend_model_single_flights_concurrent_same_flag_builds(monkeypatch) -
     deduce_backend.release_backend_resources()
 
 
-def test_lookup_cache_dir_prefers_bundled_cache(monkeypatch, tmp_path) -> None:
+def test_load_bundled_lookup_structs_reads_packaged_cache(monkeypatch, tmp_path) -> None:
     bundled_cache_dir = tmp_path / "bundled-cache"
     bundled_cache_file = bundled_cache_dir / "cache" / "lookup_structs.pickle"
     bundled_cache_file.parent.mkdir(parents=True)
-    bundled_cache_file.write_bytes(b"bundled-cache")
-    user_cache_dir = tmp_path / "user-cache"
-    user_cache_dir.mkdir()
+    expected_lookup_structs = {"loaded": True}
+    with bundled_cache_file.open("wb") as handle:
+        pickle.dump(
+            {
+                "deduce_version": "1.2.3",
+                "lookup_structs": expected_lookup_structs,
+            },
+            handle,
+        )
 
     monkeypatch.setattr(
         deduce_backend,
-        "_bundled_lookup_cache_dir",
-        lambda: bundled_cache_dir,
+        "_bundled_lookup_cache_file",
+        lambda: bundled_cache_file,
     )
-    monkeypatch.setattr(deduce_backend, "_backend_cache_dir", lambda: user_cache_dir)
 
-    assert deduce_backend._lookup_cache_dir() == user_cache_dir
-    assert (
-        user_cache_dir / "cache" / "lookup_structs.pickle"
-    ).read_bytes() == b"bundled-cache"
+    assert deduce_backend._load_bundled_lookup_structs("1.2.3") == expected_lookup_structs
 
 
-def test_lookup_cache_dir_refreshes_user_cache_when_bundled_cache_changes(
-    monkeypatch,
-    tmp_path,
-) -> None:
+def test_load_bundled_lookup_structs_rejects_wrong_version(monkeypatch, tmp_path) -> None:
     bundled_cache_dir = tmp_path / "bundled-cache"
     bundled_cache_file = bundled_cache_dir / "cache" / "lookup_structs.pickle"
     bundled_cache_file.parent.mkdir(parents=True)
-    bundled_cache_file.write_bytes(b"v1")
-    user_cache_dir = tmp_path / "user-cache"
-    user_cache_dir.mkdir()
+    with bundled_cache_file.open("wb") as handle:
+        pickle.dump(
+            {
+                "deduce_version": "old-version",
+                "lookup_structs": {"loaded": True},
+            },
+            handle,
+        )
 
     monkeypatch.setattr(
         deduce_backend,
-        "_bundled_lookup_cache_dir",
-        lambda: bundled_cache_dir,
+        "_bundled_lookup_cache_file",
+        lambda: bundled_cache_file,
     )
-    monkeypatch.setattr(deduce_backend, "_backend_cache_dir", lambda: user_cache_dir)
 
-    deduce_backend._lookup_cache_dir()
-    bundled_cache_file.write_bytes(b"v2-updated")
-
-    deduce_backend._lookup_cache_dir()
-
-    assert (
-        user_cache_dir / "cache" / "lookup_structs.pickle"
-    ).read_bytes() == b"v2-updated"
+    assert deduce_backend._load_bundled_lookup_structs("1.2.3") is None
 
 
 def test_bundled_lookup_cache_dir_returns_lookup_root(monkeypatch, tmp_path) -> None:
@@ -190,11 +187,89 @@ def test_bundled_lookup_cache_dir_returns_lookup_root(monkeypatch, tmp_path) -> 
     assert deduce_backend._bundled_lookup_cache_dir() == package_dir / "data" / "lookup"
 
 
-def test_lookup_cache_dir_falls_back_to_user_cache(monkeypatch, tmp_path) -> None:
-    user_cache_dir = tmp_path / "user-cache"
-    user_cache_dir.mkdir()
+def test_build_backend_assets_uses_bundled_lookup_structs_without_rebuilding(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    lookup_data_path = tmp_path / "lookup-data"
+    tokenizer = object()
+    bundled_lookup_structs = {"loaded": True}
 
-    monkeypatch.setattr(deduce_backend, "_bundled_lookup_cache_dir", lambda: None)
-    monkeypatch.setattr(deduce_backend, "_backend_cache_dir", lambda: user_cache_dir)
+    def fake_get_lookup_structs(**kwargs):
+        raise AssertionError(f"Rebuild should not run: {kwargs}")
 
-    assert deduce_backend._lookup_cache_dir() == user_cache_dir
+    fake_deduce = SimpleNamespace(
+        _initialize_tokenizer=lambda path: tokenizer if path == lookup_data_path else None
+    )
+
+    monkeypatch.setattr(deduce_backend, "_lookup_data_dir", lambda: lookup_data_path)
+    monkeypatch.setattr(
+        deduce_backend,
+        "_load_bundled_lookup_structs",
+        lambda deduce_version: bundled_lookup_structs if deduce_version == "1.2.3" else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce",
+        SimpleNamespace(Deduce=fake_deduce, __version__="1.2.3"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce.lookup_structs",
+        SimpleNamespace(get_lookup_structs=fake_get_lookup_structs),
+    )
+
+    assets = deduce_backend._build_backend_assets()
+
+    assert assets.lookup_data_path == lookup_data_path
+    assert assets.cache_path == lookup_data_path
+    assert assets.tokenizer is tokenizer
+    assert assets.lookup_structs == bundled_lookup_structs
+
+
+def test_build_backend_assets_rebuilds_without_writing_duplicate_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    lookup_data_path = tmp_path / "lookup-data"
+    tokenizer = object()
+    rebuilt_lookup_structs = {"rebuilt": True}
+    get_lookup_structs_calls: list[dict[str, object]] = []
+
+    def fake_get_lookup_structs(**kwargs):
+        get_lookup_structs_calls.append(kwargs)
+        return rebuilt_lookup_structs
+
+    fake_deduce = SimpleNamespace(
+        _initialize_tokenizer=lambda path: tokenizer if path == lookup_data_path else None
+    )
+
+    monkeypatch.setattr(deduce_backend, "_lookup_data_dir", lambda: lookup_data_path)
+    monkeypatch.setattr(deduce_backend, "_load_bundled_lookup_structs", lambda deduce_version: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce",
+        SimpleNamespace(Deduce=fake_deduce, __version__="1.2.3"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "belgian_deduce.lookup_structs",
+        SimpleNamespace(get_lookup_structs=fake_get_lookup_structs),
+    )
+
+    assets = deduce_backend._build_backend_assets()
+
+    assert assets.lookup_data_path == lookup_data_path
+    assert assets.cache_path == lookup_data_path
+    assert assets.tokenizer is tokenizer
+    assert assets.lookup_structs == rebuilt_lookup_structs
+    assert get_lookup_structs_calls == [
+        {
+            "lookup_path": lookup_data_path,
+            "cache_path": lookup_data_path,
+            "tokenizer": tokenizer,
+            "deduce_version": "1.2.3",
+            "build": True,
+            "save_cache": False,
+        }
+    ]

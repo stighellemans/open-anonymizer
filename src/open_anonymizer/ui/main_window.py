@@ -7,12 +7,14 @@ from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from PySide6.QtCore import QPointF, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -44,7 +46,6 @@ from open_anonymizer.models import (
     ProcessedDocument,
 )
 from open_anonymizer.services.deduce_backend import backend_is_ready
-from open_anonymizer.services.deidentifier import document_smart_key
 from open_anonymizer.services.exporter import export_processed_documents
 from open_anonymizer.services.workers import (
     BatchProcessingFailure,
@@ -63,7 +64,11 @@ from open_anonymizer.ui.anonymization_dialog import (
     load_saved_anonymization_settings,
     save_anonymization_settings,
 )
-from open_anonymizer.ui.drop_area import DropArea
+from open_anonymizer.ui.drop_area import (
+    DropArea,
+    local_paths_from_mime_data,
+    mime_data_has_local_paths,
+)
 from open_anonymizer.ui.processing_text_edit import ScanningPlainTextEdit
 
 
@@ -87,6 +92,11 @@ SETTINGS_ORGANIZATION = "Open Anonymizer"
 SETTINGS_APPLICATION = "Open Anonymizer"
 EXPORT_DIRECTORY_SETTINGS_KEY = "export/last_directory"
 BUG_REPORT_FORM_URL = "https://forms.gle/Ww8d6JajzAsbpxH38"
+OPEN_ANONYMIZER_REPOSITORY_URL = "https://github.com/stighellemans/open-anonymizer"
+BELGIAN_DEDUCE_URL = "https://github.com/stighellemans/belgian-deduce"
+ORIGINAL_DEDUCE_URL = "https://github.com/vmenger/deduce"
+CREATOR_WEBSITE_URL = "https://www.stighellemans.com"
+APP_CREATOR_NAME = "Stig Hellemans"
 DEFAULT_WINDOW_SIZE = QSize(1160, 664)
 MINIMUM_WINDOW_SIZE = QSize(840, 520)
 WINDOW_SCREEN_MARGIN = 48
@@ -94,6 +104,66 @@ PREPARING_BACKEND_TEXT = "Preparing anonymizer engine…"
 PREPARING_BACKEND_BADGE_TEXT = "Preparing"
 SCANNING_BADGE_TEXT = "Scanning"
 DEFAULT_MAX_CONCURRENT_IMPORTS = 1
+
+
+def build_bug_report_link_button(
+    callback,
+    *,
+    object_name: str,
+) -> QToolButton:
+    button = QToolButton()
+    button.setObjectName(object_name)
+    button.setAutoRaise(True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setText("report a bug or incomplete anonimization")
+    button.setIcon(bug_report_icon())
+    button.setIconSize(QSize(12, 12))
+    button.setToolButtonStyle(
+        Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    )
+    font = button.font()
+    font.setUnderline(True)
+    button.setFont(font)
+    button.clicked.connect(callback)
+    return button
+
+
+def build_text_link_button(
+    text: str,
+    callback,
+    *,
+    object_name: str,
+) -> QToolButton:
+    button = QToolButton()
+    button.setObjectName(object_name)
+    button.setAutoRaise(True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setText(text)
+    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    font = button.font()
+    font.setUnderline(True)
+    button.setFont(font)
+    button.clicked.connect(callback)
+    return button
+
+
+def build_inline_link_label(
+    html: str,
+    callback,
+    *,
+    object_name: str,
+) -> QLabel:
+    label = QLabel(html)
+    label.setObjectName(object_name)
+    label.setWordWrap(True)
+    label.setTextFormat(Qt.TextFormat.RichText)
+    label.setTextInteractionFlags(
+        Qt.TextInteractionFlag.LinksAccessibleByMouse
+        | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+    )
+    label.setOpenExternalLinks(False)
+    label.linkActivated.connect(lambda _: callback())
+    return label
 
 
 @dataclass(frozen=True)
@@ -503,6 +573,125 @@ class DocumentListWidget(QListWidget):
         return delegate.remove_button_rect(self.visualItemRect(item)).contains(QPointF(point))
 
 
+class AppInfoDialog(QDialog):
+    def __init__(
+        self,
+        open_bug_report_form,
+        open_open_anonymizer_repository,
+        open_creator_website,
+        open_belgian_deduce_repository,
+        open_original_deduce_repository,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._open_bug_report_form = open_bug_report_form
+        self._open_open_anonymizer_repository = open_open_anonymizer_repository
+        self._open_creator_website = open_creator_website
+        self._open_belgian_deduce_repository = open_belgian_deduce_repository
+        self._open_original_deduce_repository = open_original_deduce_repository
+
+        self.setObjectName("appInfoDialog")
+        self.setWindowTitle("About Open Anonymizer")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("About Open Anonymizer")
+        title.setObjectName("appInfoTitle")
+        layout.addWidget(title)
+
+        intro = build_inline_link_label(
+            (
+                "<a href='open-anonymizer' style='color:#1f4d45; text-decoration: underline;'>"
+                "Open Anonymizer</a> is an open-source local desktop app for "
+                "de-identifying Dutch and French medical text. It is <b>not</b> connected to the "
+                "internet, and your medical text is not saved by the app, so your data stays "
+                "<b>private</b> and is kept <b>safely</b> on your device while you use it."
+            ),
+            self._open_open_anonymizer_repository,
+            object_name="appInfoBody",
+        )
+        layout.addWidget(intro)
+
+        purpose = QLabel(
+            "Its purpose is to give patients and doctors practical tools to reduce personal data leakage before using third-party apps or AI tools."
+        )
+        purpose.setObjectName("appInfoBody")
+        purpose.setWordWrap(True)
+        layout.addWidget(purpose)
+
+        creator = build_inline_link_label(
+            (
+                "Created by <a href='creator' style='color:#1f4d45; text-decoration: underline;'>"
+                f"{APP_CREATOR_NAME}</a>."
+            ),
+            self._open_creator_website,
+            object_name="appInfoMeta",
+        )
+        layout.addWidget(creator)
+
+        foundation = build_inline_link_label(
+            (
+                "Built on top of <a href='belgian-deduce' "
+                "style='color:#1f4d45; text-decoration: underline;'>belgian-deduce</a>."
+            ),
+            self._open_belgian_deduce_repository,
+            object_name="appInfoMeta",
+        )
+        layout.addWidget(foundation)
+
+        origin = build_inline_link_label(
+            (
+                "<a href='original-deduce' style='color:#1f4d45; text-decoration: underline;'>"
+                "Original deduce project</a> by Vincent Menger."
+            ),
+            self._open_original_deduce_repository,
+            object_name="appInfoMeta",
+        )
+        layout.addWidget(origin)
+
+        warning_panel = QFrame()
+        warning_panel.setObjectName("appInfoWarning")
+        warning_layout = QVBoxLayout(warning_panel)
+        warning_layout.setContentsMargins(12, 10, 12, 10)
+        warning_layout.setSpacing(4)
+
+        warning_title = QLabel("Important")
+        warning_title.setObjectName("appInfoWarningTitle")
+        warning_layout.addWidget(warning_title)
+
+        warning_body = QLabel(
+            "Always review the result before sharing. Open Anonymizer helps reduce identifying details, but it <b>cannot</b> guarantee final or complete anonymization."
+        )
+        warning_body.setObjectName("appInfoWarningBody")
+        warning_body.setWordWrap(True)
+        warning_layout.addWidget(warning_body)
+
+        layout.addWidget(warning_panel)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(12)
+
+        self.bug_report_button = build_bug_report_link_button(
+            self._open_bug_report_form,
+            object_name="appInfoBugReportButton",
+        )
+        action_row.addWidget(self.bug_report_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        action_row.addStretch(1)
+
+        close_button = QPushButton("Close")
+        close_button.setObjectName("secondaryButton")
+        close_button.clicked.connect(self.accept)
+        action_row.addWidget(close_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(action_row)
+
+        self.resize(max(470, self.sizeHint().width()), self.sizeHint().height())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -532,7 +721,9 @@ class MainWindow(QMainWindow):
         self._expected_backend_preparation_flags_key: tuple[bool, ...] | None = None
         self._backend_preparation_started_at: float | None = None
         self._active_batch_flags_key: tuple[bool, ...] | None = None
+        self.app_info_dialog: AppInfoDialog | None = None
         self._closing = False
+        self._drop_state_reset_pending = False
         self.paste_processing_timer = QTimer(self)
         self.paste_processing_timer.setSingleShot(True)
         self.paste_processing_timer.setInterval(250)
@@ -550,6 +741,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Open Anonymizer")
         self.setWindowIcon(application_icon())
+        self.setAcceptDrops(True)
         initial_size = self._recommended_window_size()
         self._layout_profile = layout_profile_for_window_height(initial_size.height())
         self.resize(initial_size)
@@ -558,8 +750,86 @@ class MainWindow(QMainWindow):
             min(MINIMUM_WINDOW_SIZE.height(), initial_size.height()),
         )
         self._build_ui()
+        self._install_window_drop_targets()
         self.refresh_document_list()
         self.refresh_actions()
+
+    def _install_window_drop_targets(self) -> None:
+        for widget in self.findChildren(QWidget):
+            if widget is self.drop_area or self.drop_area.isAncestorOf(widget):
+                continue
+            widget.setAcceptDrops(True)
+            widget.installEventFilter(self)
+
+    def _set_file_drag_active(self, active: bool) -> None:
+        self._drop_state_reset_pending = False
+        self.drop_area.set_drag_active(active)
+
+    def _schedule_file_drag_reset(self) -> None:
+        self._drop_state_reset_pending = True
+        QTimer.singleShot(0, self._reset_file_drag_if_pending)
+
+    def _reset_file_drag_if_pending(self) -> None:
+        if not self._drop_state_reset_pending:
+            return
+        self._drop_state_reset_pending = False
+        self.drop_area.set_drag_active(False)
+
+    def _accept_file_drag_event(self, event) -> bool:
+        if not mime_data_has_local_paths(event.mimeData()):
+            return False
+
+        self._set_file_drag_active(True)
+        event.acceptProposedAction()
+        return True
+
+    def _handle_file_drop_event(self, event) -> bool:
+        local_paths = local_paths_from_mime_data(event.mimeData())
+        if not local_paths:
+            return False
+
+        self._set_file_drag_active(False)
+        self.handle_dropped_paths(local_paths)
+        event.acceptProposedAction()
+        return True
+
+    def eventFilter(self, watched: QObject, event) -> bool:
+        event_type = event.type()
+        if event_type in (
+            QEvent.Type.DragEnter,
+            QEvent.Type.DragMove,
+            QEvent.Type.DragLeave,
+            QEvent.Type.Drop,
+        ):
+            if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if self._accept_file_drag_event(event):
+                    return True
+            elif event_type == QEvent.Type.Drop:
+                if self._handle_file_drop_event(event):
+                    return True
+            else:
+                self._schedule_file_drag_reset()
+
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._accept_file_drag_event(event):
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._accept_file_drag_event(event):
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._schedule_file_drag_reset()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if self._handle_file_drop_event(event):
+            return
+        super().dropEvent(event)
 
     def _build_ui(self) -> None:
         layout_profile = self._layout_profile
@@ -578,12 +848,26 @@ class MainWindow(QMainWindow):
 
         title = QLabel("Open Anonymizer")
         title.setObjectName("windowTitle")
+        self.header_info_button = QToolButton()
+        self.header_info_button.setObjectName("headerInfoButton")
+        self.header_info_button.setText("i")
+        self.header_info_button.setAutoRaise(True)
+        self.header_info_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header_info_button.setToolTip("About Open Anonymizer")
+        self.header_info_button.clicked.connect(self.open_app_info_dialog)
         subtitle = QLabel(
             "Paste text or import files, configure anonymization, and copy or export clean output."
         )
         subtitle.setObjectName("windowSubtitle")
 
-        title_layout.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(self.header_info_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+
+        title_layout.addLayout(title_row)
         title_layout.addWidget(subtitle)
 
         self.header_icon_label = QLabel()
@@ -762,17 +1046,10 @@ class MainWindow(QMainWindow):
         status_bar.setSizeGripEnabled(False)
         status_bar.setContentsMargins(0, 0, 6, 0)
 
-        self.bug_report_link_button = QToolButton()
-        self.bug_report_link_button.setObjectName("bugReportLinkButton")
-        self.bug_report_link_button.setAutoRaise(True)
-        self.bug_report_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.bug_report_link_button.setText("report a bug or incomplete anonimization")
-        self.bug_report_link_button.setIcon(bug_report_icon())
-        self.bug_report_link_button.setIconSize(QSize(12, 12))
-        self.bug_report_link_button.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        self.bug_report_link_button = build_bug_report_link_button(
+            self.open_bug_report_form,
+            object_name="bugReportLinkButton",
         )
-        self.bug_report_link_button.clicked.connect(self.open_bug_report_form)
         status_bar.addPermanentWidget(self.bug_report_link_button)
         status_bar.setFixedHeight(max(20, self.bug_report_link_button.sizeHint().height() + 2))
 
@@ -786,34 +1063,41 @@ class MainWindow(QMainWindow):
     def open_bug_report_form(self) -> None:
         QDesktopServices.openUrl(QUrl(BUG_REPORT_FORM_URL))
 
+    def open_open_anonymizer_repository(self) -> None:
+        QDesktopServices.openUrl(QUrl(OPEN_ANONYMIZER_REPOSITORY_URL))
+
+    def open_creator_website(self) -> None:
+        QDesktopServices.openUrl(QUrl(CREATOR_WEBSITE_URL))
+
+    def open_belgian_deduce_repository(self) -> None:
+        QDesktopServices.openUrl(QUrl(BELGIAN_DEDUCE_URL))
+
+    def open_original_deduce_repository(self) -> None:
+        QDesktopServices.openUrl(QUrl(ORIGINAL_DEDUCE_URL))
+
+    def open_app_info_dialog(self) -> None:
+        if self.app_info_dialog is None:
+            self.app_info_dialog = AppInfoDialog(
+                self.open_bug_report_form,
+                self.open_open_anonymizer_repository,
+                self.open_creator_website,
+                self.open_belgian_deduce_repository,
+                self.open_original_deduce_repository,
+                parent=self,
+            )
+        self.app_info_dialog.show()
+        self.app_info_dialog.raise_()
+        self.app_info_dialog.activateWindow()
+
     def open_anonymization_dialog(self) -> None:
         dialog = AnonymizationDialog(
             self.anonymization_settings,
-            preview_document_key=self._preview_document_key(),
             parent=self,
         )
         if not dialog.exec():
             return
 
         self.apply_anonymization_settings(dialog.settings())
-
-    def _preview_document_key(self) -> str | None:
-        pasted_text = self.current_pasted_text()
-        if pasted_text:
-            return document_smart_key(
-                ImportedDocument(
-                    id="preview-paste",
-                    source_kind="paste",
-                    display_name="Pasted text",
-                    raw_text=pasted_text,
-                )
-            )
-
-        document = self.current_document()
-        if document is None:
-            return None
-
-        return document_smart_key(document)
 
     def current_backend_flags_key(self) -> tuple[bool, ...]:
         return self.anonymization_settings.recognition_flags.as_key()

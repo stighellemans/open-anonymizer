@@ -4,9 +4,11 @@ import threading
 import time
 from zipfile import ZipFile
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QLabel, QPushButton, QToolButton
+from PySide6.QtCore import QMimeData, QPointF, QSize, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QToolButton
 
+from open_anonymizer.main import APP_STYLESHEET
 from open_anonymizer.models import (
     AnonymizationSettings,
     ImportedDocument,
@@ -43,6 +45,31 @@ def _average_nontransparent_lightness(image) -> float:
             count += 1
 
     return total / count if count else 0.0
+
+
+def _drop_file_on_widget(widget, file_path: Path) -> tuple[QDragEnterEvent, QDropEvent]:
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(file_path))])
+    drag_position = widget.rect().center()
+    drag_enter_event = QDragEnterEvent(
+        drag_position,
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    drop_event = QDropEvent(
+        QPointF(drag_position),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    QApplication.sendEvent(widget, drag_enter_event)
+    QApplication.sendEvent(widget, drop_event)
+
+    return drag_enter_event, drop_event
 
 
 def test_main_window_keeps_pasted_text_out_of_imported_file_list(
@@ -93,6 +120,35 @@ def test_main_window_uses_white_header_icon_variant(qtbot) -> None:
 
     assert _average_nontransparent_lightness(header_pixmap.toImage()) > 240
     assert _average_nontransparent_lightness(window_pixmap.toImage()) > 240
+
+
+def test_drop_area_label_blends_with_drop_area_background(qtbot) -> None:
+    app = QApplication.instance()
+    assert app is not None
+
+    previous_stylesheet = app.styleSheet()
+    app.setStyleSheet(APP_STYLESHEET)
+    try:
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.show()
+        qtbot.waitUntil(window.isVisible)
+
+        drop_area = window.drop_area
+        label = drop_area.label
+        image = drop_area.grab().toImage()
+
+        label_center = label.geometry().center()
+        label_background = image.pixelColor(label_center)
+
+        reference_background = image.pixelColor(
+            label_center.x(),
+            max(4, label.geometry().top() - 4),
+        )
+
+        assert label_background == reference_background
+    finally:
+        app.setStyleSheet(previous_stylesheet)
 
 
 def test_recommended_window_size_stays_within_available_screen() -> None:
@@ -147,6 +203,131 @@ def test_main_window_shows_bug_report_link(qtbot, monkeypatch) -> None:
     assert opened_urls == ["https://forms.gle/Ww8d6JajzAsbpxH38"]
 
 
+def test_main_window_shows_app_info_dialog_from_header_button(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    header_info_button = window.findChild(QToolButton, "headerInfoButton")
+
+    assert header_info_button is not None
+
+    header_info_button.click()
+
+    app_info_dialog = window.findChild(QDialog, "appInfoDialog")
+
+    assert app_info_dialog is not None
+    assert app_info_dialog.isVisible() is True
+    assert any(
+        "patients and doctors practical tools" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
+    )
+    assert any(
+        "Open Anonymizer" in label.text() and "NOT connected to the internet" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
+    )
+    assert any(
+        "Created by" in label.text() and "Stig Hellemans" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+    )
+    assert any(
+        "Built on top of" in label.text() and "belgian-deduce" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+    )
+    assert any(
+        "Original deduce project" in label.text() and "Vincent Menger" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+    )
+    assert any(
+        "cannot guarantee final or complete anonymization" in label.text()
+        for label in app_info_dialog.findChildren(QLabel, "appInfoWarningBody")
+    )
+
+
+def test_app_info_dialog_uses_same_bug_report_link(qtbot, monkeypatch) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    opened_urls: list[str] = []
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.QDesktopServices.openUrl",
+        lambda url: opened_urls.append(url.toString()),
+    )
+
+    header_info_button = window.findChild(QToolButton, "headerInfoButton")
+
+    assert header_info_button is not None
+
+    header_info_button.click()
+
+    app_info_dialog = window.findChild(QDialog, "appInfoDialog")
+
+    assert app_info_dialog is not None
+
+    bug_report_button = app_info_dialog.findChild(QToolButton, "appInfoBugReportButton")
+
+    assert bug_report_button is not None
+    assert bug_report_button.text() == "report a bug or incomplete anonimization"
+    assert bug_report_button.icon().isNull() is False
+
+    bug_report_button.click()
+
+    assert opened_urls == ["https://forms.gle/Ww8d6JajzAsbpxH38"]
+
+
+def test_app_info_dialog_links_to_project_pages(qtbot, monkeypatch) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    opened_urls: list[str] = []
+
+    monkeypatch.setattr(
+        "open_anonymizer.ui.main_window.QDesktopServices.openUrl",
+        lambda url: opened_urls.append(url.toString()),
+    )
+
+    header_info_button = window.findChild(QToolButton, "headerInfoButton")
+
+    assert header_info_button is not None
+
+    header_info_button.click()
+
+    app_info_dialog = window.findChild(QDialog, "appInfoDialog")
+
+    assert app_info_dialog is not None
+
+    intro_label = next(
+        label
+        for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
+        if "Open Anonymizer" in label.text() and "NOT connected to the internet" in label.text()
+    )
+    creator_label = next(
+        label
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+        if "Created by" in label.text()
+    )
+    belgian_deduce_label = next(
+        label
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+        if "Built on top of" in label.text()
+    )
+    original_deduce_label = next(
+        label
+        for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
+        if "Original deduce project" in label.text()
+    )
+
+    intro_label.linkActivated.emit("open-anonymizer")
+    creator_label.linkActivated.emit("creator")
+    belgian_deduce_label.linkActivated.emit("belgian-deduce")
+    original_deduce_label.linkActivated.emit("original-deduce")
+
+    assert opened_urls == [
+        "https://github.com/stighellemans/open-anonymizer",
+        "https://www.stighellemans.com",
+        "https://github.com/stighellemans/belgian-deduce",
+        "https://github.com/vmenger/deduce",
+    ]
+
+
 def test_main_window_places_output_actions_with_imported_files(qtbot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -157,6 +338,29 @@ def test_main_window_places_output_actions_with_imported_files(qtbot) -> None:
     assert window.copy_button.parentWidget() is actions_parent
     assert window.export_button.parentWidget() is actions_parent
     assert window.output_view.parentWidget() is not actions_parent
+
+
+def test_main_window_accepts_file_drop_outside_drop_area(
+    tmp_path: Path,
+    qtbot,
+) -> None:
+    file_path = tmp_path / "outside-drop-zone.txt"
+    file_path.write_text("Source text", encoding="utf-8")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    dropped_paths: list[Path] = []
+    window.handle_dropped_paths = lambda paths: dropped_paths.extend(paths)
+
+    drag_enter_event, drop_event = _drop_file_on_widget(
+        window.paste_input.viewport(),
+        file_path,
+    )
+
+    assert drag_enter_event.isAccepted()
+    assert drop_event.isAccepted()
+    assert dropped_paths == [file_path]
+    assert window.drop_area.property("dragActive") is False
 
 
 def test_main_window_pasted_text_copy_flow_disables_export(qtbot) -> None:
@@ -508,8 +712,8 @@ def test_main_window_ready_document_status_label_surfaces_warnings(
 
 def test_main_window_applies_dialog_settings(qtbot, monkeypatch) -> None:
     class FakeDialog:
-        def __init__(self, anonymization_settings, preview_document_key=None, parent=None):
-            del anonymization_settings, preview_document_key, parent
+        def __init__(self, anonymization_settings, parent=None):
+            del anonymization_settings, parent
 
         def exec(self):
             return 1
@@ -547,8 +751,8 @@ def test_main_window_applies_dialog_settings(qtbot, monkeypatch) -> None:
 
 def test_main_window_cancel_keeps_existing_settings(qtbot, monkeypatch) -> None:
     class FakeDialog:
-        def __init__(self, anonymization_settings, preview_document_key=None, parent=None):
-            del anonymization_settings, preview_document_key, parent
+        def __init__(self, anonymization_settings, parent=None):
+            del anonymization_settings, parent
 
         def exec(self):
             return 0
@@ -567,7 +771,7 @@ def test_main_window_cancel_keeps_existing_settings(qtbot, monkeypatch) -> None:
 
 def test_main_window_keeps_customize_button_available_for_pasted_text(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
-        "open_anonymizer.services.smart_pseudonymizer._session_auto_date_shift_days",
+        "open_anonymizer.services.smart_pseudonymizer._auto_date_shift_days",
         lambda: 98,
     )
 

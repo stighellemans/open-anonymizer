@@ -2,8 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QMimeData, Qt, Signal
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
+
+
+def mime_data_has_local_paths(mime_data: QMimeData) -> bool:
+    return any(url.isLocalFile() for url in mime_data.urls())
+
+
+def local_paths_from_mime_data(mime_data: QMimeData) -> list[Path]:
+    return [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
+
+
+def dropped_text_from_mime_data(mime_data: QMimeData) -> str:
+    return mime_data.text().strip()
 
 
 class DropArea(QFrame):
@@ -17,7 +29,8 @@ class DropArea(QFrame):
         self.setObjectName("dropArea")
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
-        self.label = QLabel("Drop files or text here")
+        self.label = QLabel("Drop files anywhere in the window, or text here")
+        self.label.setObjectName("dropAreaLabel")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label.setWordWrap(True)
 
@@ -37,35 +50,44 @@ class DropArea(QFrame):
             Qt.AlignmentFlag.AlignHCenter,
         )
 
+    def set_drag_active(self, active: bool) -> None:
+        if bool(self.property("dragActive")) == active:
+            return
+
+        self.setProperty("dragActive", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         mime_data = event.mimeData()
-        if mime_data.hasUrls() or mime_data.hasText():
-            self.setProperty("dragActive", True)
-            self.style().unpolish(self)
-            self.style().polish(self)
+        if mime_data_has_local_paths(mime_data) or dropped_text_from_mime_data(mime_data):
+            self.set_drag_active(True)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        mime_data = event.mimeData()
+        if mime_data_has_local_paths(mime_data) or dropped_text_from_mime_data(mime_data):
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dragLeaveEvent(self, event) -> None:  # noqa: N802
-        self.setProperty("dragActive", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self.set_drag_active(False)
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
-        self.setProperty("dragActive", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self.set_drag_active(False)
 
         mime_data = event.mimeData()
-        local_paths = [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
+        local_paths = local_paths_from_mime_data(mime_data)
         if local_paths:
             self.files_dropped.emit(local_paths)
             event.acceptProposedAction()
             return
 
-        text = mime_data.text().strip()
+        text = dropped_text_from_mime_data(mime_data)
         if text:
             self.text_dropped.emit(text)
             event.acceptProposedAction()

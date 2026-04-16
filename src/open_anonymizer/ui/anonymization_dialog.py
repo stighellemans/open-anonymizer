@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSettings, QSize, Qt
-from PySide6.QtGui import QColor, QIntValidator, QPaintEvent, QPainter, QPen
+from html import escape
+
+from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -13,6 +15,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
+    QStyle,
+    QStyleOptionSlider,
+    QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +64,69 @@ RECOGNITION_LABELS = {
     "email_addresses": "Email addresses",
     "urls": "URLs",
 }
+INFO_HINTS = {
+    "smart_pseudonyms": (
+        "Keeps the text readable by swapping real details for consistent fake ones. "
+        "Example: 'Marie Dupont' becomes 'Sophie Martin' instead of '[PATIENT]'."
+    ),
+    "deidentify_filenames": (
+        "Turn this on when the filename itself might contain personal information, "
+        "like a patient's name."
+    ),
+    "general_recognition": "Turn off the categories you do not want to hide.",
+    "specific_information": (
+        "Add personal information here when you want to make sure it gets removed."
+    ),
+}
+DATE_SHIFT_SAFE_MIN_DAYS = 10
+DATE_SHIFT_MAX_ABS_DAYS = 104 * 7
+_DATE_SHIFT_NEGATIVE_STEP_COUNT = (
+    DATE_SHIFT_MAX_ABS_DAYS - DATE_SHIFT_SAFE_MIN_DAYS + 1
+)
+DATE_SHIFT_SLIDER_MAX = (_DATE_SHIFT_NEGATIVE_STEP_COUNT * 2) - 1
+
+
+def _format_tooltip_html(text: str) -> str:
+    escaped_text = escape(text).replace("\n", "<br/>")
+    return (
+        "<div style='max-width: 260px; white-space: normal; line-height: 1.35;'>"
+        f"{escaped_text}"
+        "</div>"
+    )
+
+
+def _coerce_safe_date_shift_days(days: int | None) -> int | None:
+    if days is None:
+        return None
+    if days == 0:
+        return None
+
+    bounded_days = max(-DATE_SHIFT_MAX_ABS_DAYS, min(DATE_SHIFT_MAX_ABS_DAYS, days))
+    if -DATE_SHIFT_SAFE_MIN_DAYS < bounded_days < DATE_SHIFT_SAFE_MIN_DAYS:
+        return (
+            -DATE_SHIFT_SAFE_MIN_DAYS
+            if bounded_days < 0
+            else DATE_SHIFT_SAFE_MIN_DAYS
+        )
+    return bounded_days
+
+
+def _date_shift_slider_position(days: int) -> int:
+    safe_days = _coerce_safe_date_shift_days(days)
+    if safe_days is None:
+        raise ValueError("Date shift slider requires a non-zero day shift.")
+    if safe_days < 0:
+        return safe_days + DATE_SHIFT_MAX_ABS_DAYS
+    return _DATE_SHIFT_NEGATIVE_STEP_COUNT + (safe_days - DATE_SHIFT_SAFE_MIN_DAYS)
+
+
+def _date_shift_days_from_slider_position(position: int) -> int:
+    bounded_position = max(0, min(DATE_SHIFT_SLIDER_MAX, position))
+    if bounded_position < _DATE_SHIFT_NEGATIVE_STEP_COUNT:
+        return -DATE_SHIFT_MAX_ABS_DAYS + bounded_position
+    return DATE_SHIFT_SAFE_MIN_DAYS + (
+        bounded_position - _DATE_SHIFT_NEGATIVE_STEP_COUNT
+    )
 
 
 def anonymization_qsettings() -> QSettings:
@@ -126,6 +196,7 @@ def load_saved_anonymization_settings() -> AnonymizationSettings:
         date_shift_days = int(raw_date_shift.strip()) if raw_date_shift.strip() else None
     except ValueError:
         date_shift_days = None
+    date_shift_days = _coerce_safe_date_shift_days(date_shift_days)
 
     recognition_flags = RecognitionFlags(
         **{
@@ -267,6 +338,136 @@ class ToggleSwitch(QCheckBox):
         painter.end()
 
 
+class InfoHintButton(QToolButton):
+    def __init__(self, tooltip: str, parent=None) -> None:
+        super().__init__(parent)
+        self._hint_text = tooltip
+        self.setText("i")
+        self.setToolTip(_format_tooltip_html(tooltip))
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("infoHintButton", True)
+        self.setFixedSize(16, 16)
+        self.clicked.connect(self._show_tooltip_now)
+
+    def hint_text(self) -> str:
+        return self._hint_text
+
+    def _show_tooltip_now(self) -> None:
+        tooltip_pos = self.mapToGlobal(QPoint(self.width() + 6, self.height() // 2))
+        QToolTip.showText(tooltip_pos, self.toolTip(), self)
+
+
+class DateShiftSlider(QWidget):
+    valueChanged = Signal(int)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setToolTip("")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self._slider_wrap = QWidget()
+        self._slider_wrap.setMinimumHeight(36)
+        slider_layout = QVBoxLayout(self._slider_wrap)
+        slider_layout.setContentsMargins(0, 12, 0, 0)
+        slider_layout.setSpacing(0)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setObjectName("dateShiftSlider")
+        self._slider.setRange(0, DATE_SHIFT_SLIDER_MAX)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(28)
+        self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._slider.setFixedWidth(220)
+        self._slider.valueChanged.connect(self._handle_value_changed)
+        slider_layout.addWidget(self._slider)
+
+        self._bubble_label = QLabel(self._slider_wrap)
+        self._bubble_label.setObjectName("dateShiftBubble")
+        self._bubble_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(self._slider_wrap)
+
+        limits_layout = QHBoxLayout()
+        limits_layout.setContentsMargins(0, 0, 0, 0)
+        limits_layout.setSpacing(0)
+        self._lower_limit_label = QLabel(f"{-DATE_SHIFT_MAX_ABS_DAYS:+d}")
+        self._lower_limit_label.setObjectName("dateShiftLimitLabel")
+        self._upper_limit_label = QLabel(f"{DATE_SHIFT_MAX_ABS_DAYS:+d}")
+        self._upper_limit_label.setObjectName("dateShiftLimitLabel")
+        limits_layout.addWidget(self._lower_limit_label)
+        limits_layout.addStretch(1)
+        limits_layout.addWidget(self._upper_limit_label)
+        layout.addLayout(limits_layout)
+
+        self.set_days(_date_shift_days_from_slider_position(self._slider.value()))
+
+    def value(self) -> int:
+        return self._slider.value()
+
+    def setValue(self, value: int) -> None:
+        self._slider.setValue(value)
+
+    def days(self) -> int:
+        return _date_shift_days_from_slider_position(self._slider.value())
+
+    def set_days(self, days: int) -> None:
+        self._slider.setValue(_date_shift_slider_position(days))
+        self._update_bubble_position()
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        self._slider.setEnabled(enabled)
+        self._bubble_label.setEnabled(enabled)
+        self._lower_limit_label.setEnabled(enabled)
+        self._upper_limit_label.setEnabled(enabled)
+
+    def setToolTip(self, tooltip: str) -> None:
+        super().setToolTip(tooltip)
+        if hasattr(self, "_slider"):
+            self._slider.setToolTip(tooltip)
+            self._bubble_label.setToolTip(tooltip)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_bubble_position()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_bubble_position()
+
+    def _handle_value_changed(self, value: int) -> None:
+        self._update_bubble_position()
+        self.valueChanged.emit(value)
+
+    def _update_bubble_position(self) -> None:
+        self._bubble_label.setText(f"{self.days():+d}")
+        self._bubble_label.adjustSize()
+
+        option = QStyleOptionSlider()
+        self._slider.initStyleOption(option)
+        handle_rect = self._slider.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderHandle,
+            self._slider,
+        )
+        bubble_x = (
+            self._slider.geometry().x()
+            + handle_rect.center().x()
+            - (self._bubble_label.width() // 2)
+        )
+        bubble_x = max(0, min(self.width() - self._bubble_label.width(), bubble_x))
+        bubble_y = max(0, self._slider.geometry().y() - self._bubble_label.height() - 2)
+        self._bubble_label.move(bubble_x, bubble_y)
+
+
 class PersonEntryRow(QWidget):
     def __init__(
         self,
@@ -384,15 +585,15 @@ class AnonymizationDialog(QDialog):
     def __init__(
         self,
         anonymization_settings: AnonymizationSettings,
-        preview_document_key: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._accepted_settings: AnonymizationSettings | None = None
         self._checkboxes: dict[str, QCheckBox] = {}
+        self._date_shift_override_enabled = False
+        self._syncing_date_shift_slider = False
         self.other_person_rows: list[PersonEntryRow] = []
         self.address_rows: list[AddressEntryRow] = []
-        self.preview_document_key = preview_document_key
 
         self.setWindowTitle("Customize anonymization")
         self.resize(700, 480)
@@ -409,6 +610,7 @@ class AnonymizationDialog(QDialog):
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.viewport().setObjectName("dialogViewport")
 
         content = QWidget()
         content.setObjectName("dialogBody")
@@ -431,20 +633,14 @@ class AnonymizationDialog(QDialog):
                 MODE_LABELS["smart_pseudonyms"],
                 "Use realistic replacements for names, institutions, and dates.",
                 self.smart_mode_toggle,
+                info_text=INFO_HINTS["smart_pseudonyms"],
+                info_button_name="smartPlaceholdersInfoButton",
             )
         )
-        self.date_shift_days_input = QLineEdit()
-        self.date_shift_days_input.setObjectName("compactNumberInput")
-        self.date_shift_days_input.setValidator(
-            QIntValidator(-36500, 36500, self.date_shift_days_input)
+        self.date_shift_days_slider = DateShiftSlider()
+        self.date_shift_days_slider.valueChanged.connect(
+            self._handle_date_shift_slider_changed
         )
-        self.date_shift_days_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.date_shift_days_input.setPlaceholderText("Auto")
-        self.date_shift_days_input.setToolTip(
-            "Optional signed day shift. Leave blank to keep automatic shifting."
-        )
-        self.date_shift_days_input.setFixedWidth(88)
-        self.date_shift_days_input.textChanged.connect(self._update_date_shift_input_state)
         self.smart_date_shift_row = self._smart_date_shift_row()
         options_layout.addWidget(self.smart_date_shift_row)
         options_layout.addWidget(self._row_divider())
@@ -456,12 +652,20 @@ class AnonymizationDialog(QDialog):
                 "De-identify exported filenames",
                 "Rename exported files with anonymized names.",
                 self.deidentify_filenames_toggle,
+                info_text=INFO_HINTS["deidentify_filenames"],
+                info_button_name="deidentifyFilenamesInfoButton",
             )
         )
         content_layout.addLayout(options_layout)
         content_layout.addWidget(self._section_divider())
 
-        content_layout.addWidget(self._section_title("General recognition"))
+        content_layout.addWidget(
+            self._section_heading(
+                "General recognition",
+                INFO_HINTS["general_recognition"],
+                info_button_name="generalRecognitionInfoButton",
+            )
+        )
         recognition_layout = QGridLayout()
         recognition_layout.setContentsMargins(0, 0, 0, 0)
         recognition_layout.setHorizontalSpacing(18)
@@ -478,20 +682,26 @@ class AnonymizationDialog(QDialog):
         content_layout.addLayout(recognition_layout)
         content_layout.addWidget(self._section_divider())
 
-        content_layout.addWidget(self._section_title("Hide specific information"))
+        content_layout.addWidget(
+            self._section_heading(
+                "Hide specific information",
+                INFO_HINTS["specific_information"],
+                info_button_name="hideSpecificInformationInfoButton",
+            )
+        )
         patient_layout = QGridLayout()
         patient_layout.setContentsMargins(0, 0, 0, 0)
         patient_layout.setHorizontalSpacing(12)
         patient_layout.setVerticalSpacing(8)
 
         self.first_name_input = QLineEdit()
-        self.first_name_input.textChanged.connect(self._update_date_shift_input_state)
+        self.first_name_input.textChanged.connect(self._update_date_shift_slider_state)
         self.last_name_input = QLineEdit()
-        self.last_name_input.textChanged.connect(self._update_date_shift_input_state)
+        self.last_name_input.textChanged.connect(self._update_date_shift_slider_state)
         self.birthdate_input = QLineEdit()
         self.birthdate_input.setPlaceholderText("DD/MM/YYYY")
         self.birthdate_input.textChanged.connect(self.clear_error)
-        self.birthdate_input.textChanged.connect(self._update_date_shift_input_state)
+        self.birthdate_input.textChanged.connect(self._update_date_shift_slider_state)
         patient_layout.addWidget(self._field_label("First name patient"), 0, 0)
         patient_layout.addWidget(self._field_label("Last name patient"), 0, 1)
         patient_layout.addWidget(self._field_label("Birthdate patient"), 0, 2)
@@ -546,10 +756,21 @@ class AnonymizationDialog(QDialog):
             }
             QScrollArea {
                 border: none;
-                background: transparent;
+                background: #ffffff;
+            }
+            QWidget#dialogViewport {
+                background: #ffffff;
             }
             QWidget#dialogBody {
-                background: transparent;
+                background: #ffffff;
+            }
+            QToolTip {
+                background: #111827;
+                border: 1px solid #1f2937;
+                border-radius: 7px;
+                color: #f9fafb;
+                font-size: 11px;
+                padding: 4px 6px;
             }
             QLabel#sectionTitle {
                 color: #111827;
@@ -570,9 +791,41 @@ class AnonymizationDialog(QDialog):
                 color: #6b7280;
                 font-size: 12px;
             }
-            QLineEdit#compactNumberInput {
+            QToolButton[infoHintButton="true"] {
+                background: transparent;
+                border: 1px solid #d1d5db;
                 border-radius: 8px;
-                padding: 6px 8px;
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 700;
+                padding: 0;
+            }
+            QToolButton[infoHintButton="true"]:hover {
+                background: #f3f4f6;
+                border-color: #9ca3af;
+                color: #111827;
+            }
+            QToolButton[infoHintButton="true"]:pressed {
+                background: #e5e7eb;
+                border-color: #9ca3af;
+                color: #111827;
+            }
+            QToolButton[infoHintButton="true"]:focus {
+                outline: none;
+            }
+            QLabel#dateShiftBubble {
+                background: #111827;
+                border-radius: 8px;
+                color: #f9fafb;
+                font-size: 10px;
+                font-weight: 600;
+                min-height: 16px;
+                padding: 0 6px;
+            }
+            QLabel#dateShiftLimitLabel {
+                color: #9ca3af;
+                font-size: 10px;
+                font-weight: 500;
             }
             QFrame#sectionDivider {
                 background: #e5e7eb;
@@ -593,6 +846,36 @@ class AnonymizationDialog(QDialog):
             }
             QLineEdit:focus {
                 border-color: #111827;
+            }
+            QSlider#dateShiftSlider {
+                min-height: 16px;
+            }
+            QSlider#dateShiftSlider::groove:horizontal {
+                background: #e5e7eb;
+                border-radius: 2px;
+                height: 4px;
+            }
+            QSlider#dateShiftSlider::sub-page:horizontal {
+                background: #111827;
+                border-radius: 2px;
+            }
+            QSlider#dateShiftSlider::add-page:horizontal {
+                background: #e5e7eb;
+                border-radius: 2px;
+            }
+            QSlider#dateShiftSlider::handle:horizontal {
+                background: #ffffff;
+                border: 1px solid #111827;
+                border-radius: 6px;
+                height: 12px;
+                margin: -4px 0;
+                width: 12px;
+            }
+            QSlider#dateShiftSlider::handle:horizontal:hover {
+                background: #f9fafb;
+            }
+            QSlider#dateShiftSlider::handle:horizontal:pressed {
+                background: #f3f4f6;
             }
             QCheckBox {
                 color: #111827;
@@ -624,6 +907,7 @@ class AnonymizationDialog(QDialog):
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #b91c1c;")
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.error_label.hide()
         layout.addWidget(self.error_label)
 
         button_box = QDialogButtonBox(
@@ -655,11 +939,47 @@ class AnonymizationDialog(QDialog):
         label.setObjectName("sectionTitle")
         return label
 
+    def _label_with_info(
+        self,
+        label: QLabel,
+        info_text: str,
+        *,
+        info_button_name: str,
+    ) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        info_button = InfoHintButton(info_text)
+        info_button.setObjectName(info_button_name)
+
+        layout.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(info_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addStretch(1)
+        return row
+
+    def _section_heading(
+        self,
+        text: str,
+        info_text: str,
+        *,
+        info_button_name: str,
+    ) -> QWidget:
+        return self._label_with_info(
+            self._section_title(text),
+            info_text,
+            info_button_name=info_button_name,
+        )
+
     def _option_row(
         self,
         title: str,
         description: str,
         toggle: ToggleSwitch,
+        *,
+        info_text: str | None = None,
+        info_button_name: str | None = None,
     ) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -674,7 +994,16 @@ class AnonymizationDialog(QDialog):
         description_label = QLabel(description)
         description_label.setObjectName("optionDescription")
         description_label.setWordWrap(True)
-        text_column.addWidget(title_label)
+        if info_text and info_button_name:
+            text_column.addWidget(
+                self._label_with_info(
+                    title_label,
+                    info_text,
+                    info_button_name=info_button_name,
+                )
+            )
+        else:
+            text_column.addWidget(title_label)
         text_column.addWidget(description_label)
 
         layout.addLayout(text_column, 1)
@@ -683,17 +1012,12 @@ class AnonymizationDialog(QDialog):
 
     def _smart_date_shift_row(self) -> QWidget:
         row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 6)
-        layout.setSpacing(8)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 1, 0, 6)
+        layout.setSpacing(4)
 
-        label = self._field_label("Date shift")
-        self.date_shift_days_suffix_label = self._field_label("days")
-
-        layout.addWidget(label)
-        layout.addWidget(self.date_shift_days_input, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.date_shift_days_suffix_label)
-        layout.addStretch(1)
+        layout.addWidget(self._field_label("Date shift (days)"))
+        layout.addWidget(self.date_shift_days_slider, 0, Qt.AlignmentFlag.AlignLeft)
         return row
 
     def _row_divider(self) -> QFrame:
@@ -764,25 +1088,9 @@ class AnonymizationDialog(QDialog):
 
     def _handle_smart_date_shift_state_changed(self, checked: bool) -> None:
         self._update_smart_date_shift_visibility(checked)
-        self._update_date_shift_input_state()
+        self._update_date_shift_slider_state()
 
-    def _update_date_shift_input_state(self, value: str | None = None) -> None:
-        del value
-        if not self.smart_mode_toggle.isChecked():
-            self.date_shift_days_input.setPlaceholderText("")
-            self.date_shift_days_suffix_label.setText("days")
-            self.date_shift_days_input.setToolTip(
-                "Only used when Smart placeholders is enabled."
-            )
-            return
-
-        if self.date_shift_days_input.text().strip():
-            self.date_shift_days_suffix_label.setText("days")
-            self.date_shift_days_input.setToolTip(
-                "Filled value overrides auto date shifting."
-            )
-            return
-
+    def _preview_auto_date_shift_days(self) -> int | None:
         try:
             birthdate = parse_birthdate(self.birthdate_input.text())
         except ProcessingError:
@@ -796,22 +1104,55 @@ class AnonymizationDialog(QDialog):
         )
         auto_shift_days, _ = effective_date_shift_days(
             preview_settings,
-            document_key=self.preview_document_key,
         )
-        if auto_shift_days is not None:
-            self.date_shift_days_input.setPlaceholderText(
-                f"Auto {auto_shift_days:+d}"
-            )
-            self.date_shift_days_suffix_label.setText("days")
-            self.date_shift_days_input.setToolTip(
-                f"Auto currently resolves to {format_date_shift_days(auto_shift_days)}."
+        return _coerce_safe_date_shift_days(auto_shift_days)
+
+    def _set_date_shift_slider_days(self, days: int, *, is_manual: bool) -> None:
+        safe_days = _coerce_safe_date_shift_days(days)
+        if safe_days is None:
+            safe_days = DATE_SHIFT_SAFE_MIN_DAYS
+
+        self._date_shift_override_enabled = is_manual
+        self._syncing_date_shift_slider = True
+        blocker = QSignalBlocker(self.date_shift_days_slider)
+        self.date_shift_days_slider.set_days(safe_days)
+        del blocker
+        self._syncing_date_shift_slider = False
+
+    def _handle_date_shift_slider_changed(self, value: int) -> None:
+        del value
+        if not self._syncing_date_shift_slider:
+            self._date_shift_override_enabled = True
+        self._update_date_shift_slider_state()
+
+    def _update_date_shift_slider_state(self, value: str | None = None) -> None:
+        del value
+
+        auto_shift_days = self._preview_auto_date_shift_days()
+        if not self._date_shift_override_enabled and auto_shift_days is not None:
+            self._set_date_shift_slider_days(auto_shift_days, is_manual=False)
+
+        if not self.smart_mode_toggle.isChecked():
+            self.date_shift_days_slider.setToolTip(
+                "Only used when Smart placeholders is enabled."
             )
             return
 
-        self.date_shift_days_input.setPlaceholderText("Per file")
-        self.date_shift_days_suffix_label.setText("")
-        self.date_shift_days_input.setToolTip(
-            "Auto varies by document until patient details are configured."
+        if self._date_shift_override_enabled:
+            self.date_shift_days_slider.setToolTip(
+                "Custom date shift override. The slider skips the unsafe zone between -10 and +10 days."
+            )
+            return
+
+        if auto_shift_days is not None:
+            self.date_shift_days_slider.setToolTip(
+                f"Auto currently resolves to {format_date_shift_days(auto_shift_days)}. "
+                "Moving the slider will save a custom value."
+            )
+            return
+
+        self.date_shift_days_slider.setToolTip(
+            "Moving the slider will save a custom date shift."
         )
 
     def _load_settings(self, anonymization_settings: AnonymizationSettings) -> None:
@@ -822,10 +1163,13 @@ class AnonymizationDialog(QDialog):
             if anonymization_settings.birthdate
             else ""
         )
-        self.date_shift_days_input.setText(
-            ""
-            if anonymization_settings.date_shift_days is None
-            else str(anonymization_settings.date_shift_days)
+        saved_date_shift_days = _coerce_safe_date_shift_days(
+            anonymization_settings.date_shift_days
+        )
+        auto_shift_days = self._preview_auto_date_shift_days() or DATE_SHIFT_SAFE_MIN_DAYS
+        self._set_date_shift_slider_days(
+            saved_date_shift_days or auto_shift_days,
+            is_manual=saved_date_shift_days is not None,
         )
         self._clear_other_person_rows()
         self._clear_address_rows()
@@ -847,22 +1191,22 @@ class AnonymizationDialog(QDialog):
         )
         self.smart_mode_toggle.setChecked(anonymization_settings.mode == "smart_pseudonyms")
         self._update_smart_date_shift_visibility()
-        self._update_date_shift_input_state()
+        self._update_date_shift_slider_state()
 
         for name, checkbox in self._checkboxes.items():
             checkbox.setChecked(getattr(anonymization_settings.recognition_flags, name))
 
     def clear_error(self) -> None:
         self.error_label.clear()
+        self.error_label.hide()
 
     def current_settings(self) -> AnonymizationSettings:
         birthdate = parse_birthdate(self.birthdate_input.text())
-        date_shift_days_text = self.date_shift_days_input.text().strip()
-
-        try:
-            date_shift_days = int(date_shift_days_text) if date_shift_days_text else None
-        except ValueError as exc:
-            raise ProcessingError("Date shift must be a whole number of days.") from exc
+        date_shift_days = (
+            self.date_shift_days_slider.days()
+            if self._date_shift_override_enabled
+            else None
+        )
 
         return AnonymizationSettings(
             first_name=self.first_name_input.text().strip(),
@@ -889,6 +1233,7 @@ class AnonymizationDialog(QDialog):
             self._accepted_settings = self.current_settings()
         except ProcessingError as exc:
             self.error_label.setText(str(exc))
+            self.error_label.show()
             return
 
         self.accept()
