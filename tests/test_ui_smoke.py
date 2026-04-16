@@ -5,7 +5,7 @@ import time
 from zipfile import ZipFile
 
 from PySide6.QtCore import QMimeData, QPointF, QSize, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QTextDocumentFragment
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QToolButton
 
 from open_anonymizer.main import APP_STYLESHEET
@@ -70,6 +70,10 @@ def _drop_file_on_widget(widget, file_path: Path) -> tuple[QDragEnterEvent, QDro
     QApplication.sendEvent(widget, drop_event)
 
     return drag_enter_event, drop_event
+
+
+def _label_plain_text(label: QLabel) -> str:
+    return QTextDocumentFragment.fromHtml(label.text()).toPlainText()
 
 
 def test_main_window_keeps_pasted_text_out_of_imported_file_list(
@@ -218,27 +222,32 @@ def test_main_window_shows_app_info_dialog_from_header_button(qtbot) -> None:
     assert app_info_dialog is not None
     assert app_info_dialog.isVisible() is True
     assert any(
-        "patients and doctors practical tools" in label.text()
+        "patients and doctors practical tools" in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
     )
     assert any(
-        "Open Anonymizer" in label.text() and "NOT connected to the internet" in label.text()
+        "open anonymizer" in _label_plain_text(label).casefold()
+        and "not connected to the internet" in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
     )
     assert any(
-        "Created by" in label.text() and "Stig Hellemans" in label.text()
+        "created by" in _label_plain_text(label).casefold()
+        and "stig hellemans" in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
     )
     assert any(
-        "Built on top of" in label.text() and "belgian-deduce" in label.text()
+        "built on top of" in _label_plain_text(label).casefold()
+        and "belgian-deduce" in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
     )
     assert any(
-        "Original deduce project" in label.text() and "Vincent Menger" in label.text()
+        "original deduce project" in _label_plain_text(label).casefold()
+        and "vincent menger" in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
     )
     assert any(
-        "cannot guarantee final or complete anonymization" in label.text()
+        "cannot guarantee final or complete anonymization"
+        in _label_plain_text(label).casefold()
         for label in app_info_dialog.findChildren(QLabel, "appInfoWarningBody")
     )
 
@@ -297,22 +306,23 @@ def test_app_info_dialog_links_to_project_pages(qtbot, monkeypatch) -> None:
     intro_label = next(
         label
         for label in app_info_dialog.findChildren(QLabel, "appInfoBody")
-        if "Open Anonymizer" in label.text() and "NOT connected to the internet" in label.text()
+        if "open anonymizer" in _label_plain_text(label).casefold()
+        and "not connected to the internet" in _label_plain_text(label).casefold()
     )
     creator_label = next(
         label
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
-        if "Created by" in label.text()
+        if "created by" in _label_plain_text(label).casefold()
     )
     belgian_deduce_label = next(
         label
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
-        if "Built on top of" in label.text()
+        if "built on top of" in _label_plain_text(label).casefold()
     )
     original_deduce_label = next(
         label
         for label in app_info_dialog.findChildren(QLabel, "appInfoMeta")
-        if "Original deduce project" in label.text()
+        if "original deduce project" in _label_plain_text(label).casefold()
     )
 
     intro_label.linkActivated.emit("open-anonymizer")

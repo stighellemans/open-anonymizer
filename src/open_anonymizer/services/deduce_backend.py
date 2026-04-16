@@ -4,6 +4,7 @@ import atexit
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
+import inspect
 import importlib.resources as importlib_resources
 import json
 from pathlib import Path
@@ -294,6 +295,33 @@ def _flags_from_key(flags_key: tuple[bool, ...]) -> RecognitionFlags:
     return RecognitionFlags(**dict(zip(RECOGNITION_GROUPS, flags_key)))
 
 
+def _call_get_lookup_structs(get_lookup_structs: Any, **kwargs: Any) -> Any:
+    try:
+        signature = inspect.signature(get_lookup_structs)
+    except (TypeError, ValueError):
+        return get_lookup_structs(**kwargs)
+
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return get_lookup_structs(**kwargs)
+
+    accepted_kwargs = {
+        name: value
+        for name, value in kwargs.items()
+        if (
+            name in signature.parameters
+            and signature.parameters[name].kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        )
+    }
+    return get_lookup_structs(**accepted_kwargs)
+
+
 def _build_backend_assets() -> _SharedBackendAssets:
     from belgian_deduce import Deduce
     from belgian_deduce import __version__ as package_version
@@ -304,7 +332,8 @@ def _build_backend_assets() -> _SharedBackendAssets:
     tokenizer = Deduce._initialize_tokenizer(lookup_data_path)
     lookup_structs = _load_bundled_lookup_structs(package_version)
     if lookup_structs is None:
-        lookup_structs = get_lookup_structs(
+        lookup_structs = _call_get_lookup_structs(
+            get_lookup_structs,
             lookup_path=lookup_data_path,
             cache_path=cache_path,
             tokenizer=tokenizer,

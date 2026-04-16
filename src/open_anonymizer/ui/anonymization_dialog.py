@@ -597,7 +597,7 @@ class AnonymizationDialog(QDialog):
 
         self.setWindowTitle("Customize anonymization")
         self.resize(700, 480)
-        self.setMinimumSize(620, 360)
+        self.setMinimumSize(620, 320)
         self._build_ui()
         self._load_settings(anonymization_settings)
 
