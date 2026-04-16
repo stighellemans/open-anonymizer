@@ -10,13 +10,20 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-latest
-          - windows-latest
+        include:
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+          - runner: windows-latest
+            platform: windows
+            arch: x64
 
     steps:
       - uses: actions/checkout@v4
@@ -34,21 +41,21 @@ jobs:
         run: python scripts/build_desktop.py
 
       - name: Create macOS disk image
-        if: runner.os == 'macOS'
-        run: python scripts/build_macos_dmg.py
+        if: matrix.platform == 'macos'
+        run: python scripts/build_macos_dmg.py --output-path release/open-anonymizer-macos-${{ matrix.arch }}.dmg
 
       - name: Install Inno Setup
-        if: runner.os == 'Windows'
+        if: matrix.platform == 'windows'
         run: choco install innosetup --no-progress -y
 
       - name: Create Windows installer
-        if: runner.os == 'Windows'
+        if: matrix.platform == 'windows'
         run: python scripts/build_windows_installer.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: release/*
 
   publish:
