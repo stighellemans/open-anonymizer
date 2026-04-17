@@ -57,11 +57,20 @@ jobs:
           }
           Copy-Item $installer.FullName "release/open-anonymizer-windows-setup.exe" -Force
 
-      - name: Upload packaged artifact
+      - name: Upload packaged macOS artifact
+        if: matrix.platform == 'macos'
         uses: actions/upload-artifact@v4
         with:
           name: packaged-${{ matrix.platform }}-${{ matrix.arch }}
-          path: release/*
+          path: release/open-anonymizer-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+      - name: Upload packaged Windows artifact
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/open-anonymizer-windows-setup.exe
           if-no-files-found: error
 
   python-distributions:
@@ -90,4 +99,34 @@ jobs:
         with:
           name: packaged-python-distributions
           path: python-dist/*
+          if-no-files-found: error
+
+  release-assets:
+    needs:
+      - build
+      - python-distributions
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Assemble release metadata
+        run: |
+          python scripts/assemble_release_metadata.py \
+            --artifacts-dir release-artifacts \
+            --output-dir release-assets
+
+      - name: Upload combined release asset bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-release-assets
+          path: release-assets/*
           if-no-files-found: error

@@ -28,13 +28,17 @@ wheels = [
 [[package]]
 name = "belgian-deduce"
 version = "4.0.0"
-source = { git = "https://github.com/stighellemans/belgian-deduce.git?rev=9ebf3be36beadec03c9f3d4271099a86fd7dfc1f#9ebf3be36beadec03c9f3d4271099a86fd7dfc1f" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docdeid" },
     { name = "frozendict" },
     { name = "rapidfuzz", version = "3.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "rapidfuzz", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "regex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/3d/1ac2efd8b3d67f94a442a149042930f3e9384f368f5b9a4b496cdd8f7b0e/belgian_deduce-4.0.0.tar.gz", hash = "sha256:e3982a36538cc8a7a6523c6a4be44edec1694dc31de6bc40f7ab66b754f0b7a6", size = 1812566, upload-time = "2026-04-17T09:02:42.265Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/ea/8c4c218cc5e9520b667692e4106a4990df816e36b80c9c69a7a448fd94fd/belgian_deduce-4.0.0-py3-none-any.whl", hash = "sha256:9a95951e3f0eba1e1f396b6f87f87a1f8b81f9c0bb3127dd22bf6655256b1206", size = 8496531, upload-time = "2026-04-17T09:02:39.874Z" },
 ]
 
 [[package]]
@@ -716,7 +720,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "belgian-deduce", git = "https://github.com/stighellemans/belgian-deduce.git?rev=9ebf3be36beadec03c9f3d4271099a86fd7dfc1f" },
+    { name = "belgian-deduce", specifier = "==4.0.0" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.3,<7" },
     { name = "pypdf", specifier = ">=5.7,<6" },

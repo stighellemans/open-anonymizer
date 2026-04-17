@@ -1,6 +1,6 @@
 # Open Anonymizer
 
-Open Anonymizer is a local desktop application for de-identifying Dutch and French medical text. It uses the [`belgian-deduce`](https://github.com/stighellemans/belgian-deduce) backend and wraps it in a drag-and-drop interface for pasted text, `.txt` files, `.html` files, and text-based `.pdf` files.
+Open Anonymizer is a local desktop application for de-identifying Dutch and French medical text. It uses the [`belgian-deduce`](https://github.com/stighellemans/belgian-deduce) backend, published on PyPI as `belgian-deduce`, and wraps it in a drag-and-drop interface for pasted text, `.txt` files, `.html` files, and text-based `.pdf` files.
 
 ![Open Anonymizer screenshot](docs/images/open-anonymizer-demo.png)
 
@@ -23,7 +23,7 @@ Open Anonymizer is a local desktop application for de-identifying Dutch and Fren
 
 - Python 3.9
 - PySide6
-- `belgian-deduce` pinned to commit `9ebf3be36beadec03c9f3d4271099a86fd7dfc1f`
+- `belgian-deduce==4.0.0` from PyPI
 - `pypdfium2` with `pypdf` fallbacks for text-based PDF extraction
 - PyInstaller for desktop packaging
 
@@ -58,7 +58,7 @@ uv run --extra dev python -m build --sdist --wheel
 uv run --extra dev python -m twine check dist/*.tar.gz dist/*.whl
 ```
 
-Tagged `v*` pushes now publish a GitHub release with the desktop installers and the Python `sdist`/wheel attached. The manual `Package Artifacts` workflow builds the same artifacts without publishing a release.
+Tagged `v*` pushes now publish a GitHub release with the desktop installers, the Python `sdist`/wheel, `SHA256SUMS.txt`, and `release-manifest.json` attached. The manual `Package Artifacts` workflow assembles the same release-asset bundle as workflow artifacts without publishing a release.
 
 ## Build Desktop Artifacts
 
@@ -77,19 +77,14 @@ python scripts/build_windows_installer.py
 
 That writes a `setup.exe` style installer to `release/`.
 
-Assemble a website upload bundle with the installers, checksums, a manifest, and a simple download page:
-
-```bash
-python scripts/prepare_web_release.py
-```
-
-That writes a self-contained folder to `release/web-ready/`.
+Tagged releases automatically flatten the uploaded build artifacts into the published GitHub release assets and add `SHA256SUMS.txt` plus `release-manifest.json` for download verification.
 
 ## Packaging Notes
 
 - v1 targets macOS and Windows.
-- Tagged releases attach macOS and Windows installers plus Python `sdist` and wheel artifacts.
-- Public release assets are a zipped `.app` bundle on macOS and a `setup.exe` installer on Windows.
+- Tagged releases attach the Python `sdist` and wheel to the GitHub release.
+- Tagged releases also attach `SHA256SUMS.txt` and `release-manifest.json` alongside the downloadable packages.
+- Public release assets are DMG installers on macOS and a `setup.exe` installer on Windows.
 - PDF extraction prefers PDFium and falls back to `pypdf` heuristics for better spacing recovery.
 - Scanned pages can use OCR fallback through bundled `tesseract_runtime` files inside the app, or through `tesseract` on `PATH` during development.
 - To ship a click-and-play build with OCR included, stage a self-contained runtime in `vendor/tesseract_runtime/` before running `python scripts/build_desktop.py`. Use `python scripts/stage_tesseract_runtime.py /path/to/runtime` to copy a prepared runtime into place.
