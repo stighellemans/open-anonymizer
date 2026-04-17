@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   delete-release-bundle-package:
-    if: contains(github.event.head_commit.message, 'Remove package publishing from release flow')
     runs-on: ubuntu-latest
 
     steps:
@@ -19,7 +18,55 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          http_code="$(
+          list_code="$(
+            curl -sS \
+              -o /tmp/package-versions.json \
+              -w "%{http_code}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/user/packages/container/open-anonymizer-release-bundle/versions"
+          )"
+
+          if [ "${list_code}" = "404" ]; then
+            exit 0
+          fi
+
+          if [ "${list_code}" != "200" ]; then
+            echo "Failed to list package versions with HTTP ${list_code}."
+            cat /tmp/package-versions.json
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          version_ids = [str(item["id"]) for item in json.loads(Path("/tmp/package-versions.json").read_text())]
+          Path("/tmp/package-version-ids.txt").write_text("\n".join(version_ids))
+          print("\n".join(version_ids))
+          PY
+
+          while IFS= read -r version_id; do
+            [ -n "${version_id}" ] || continue
+            delete_version_code="$(
+              curl -sS \
+                -o /tmp/delete-package-version.json \
+                -w "%{http_code}" \
+                -X DELETE \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "https://api.github.com/user/packages/container/open-anonymizer-release-bundle/versions/${version_id}"
+            )"
+
+            if [ "${delete_version_code}" != "204" ] && [ "${delete_version_code}" != "404" ]; then
+              echo "Failed to delete package version ${version_id} with HTTP ${delete_version_code}."
+              cat /tmp/delete-package-version.json
+              exit 1
+            fi
+          done </tmp/package-version-ids.txt
+
+          delete_package_code="$(
             curl -sS \
               -o /tmp/delete-package-response.json \
               -w "%{http_code}" \
@@ -30,11 +77,8 @@ jobs:
               "https://api.github.com/user/packages/container/open-anonymizer-release-bundle"
           )"
 
-          if [ "${http_code}" = "204" ] || [ "${http_code}" = "404" ]; then
-            cat /tmp/delete-package-response.json || true
-            exit 0
+          if [ "${delete_package_code}" != "204" ] && [ "${delete_package_code}" != "404" ]; then
+            echo "Failed to delete package container with HTTP ${delete_package_code}."
+            cat /tmp/delete-package-response.json
+            exit 1
           fi
-
-          echo "Package deletion failed with HTTP ${http_code}."
-          cat /tmp/delete-package-response.json
-          exit 1
