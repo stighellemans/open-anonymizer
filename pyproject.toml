@@ -1,16 +1,32 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-anonymizer"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A local desktop app for de-identifying medical text with belgian-deduce."
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "Stig Hellemans" }
+]
+keywords = ["anonymization", "de-identification", "medical", "desktop", "pdf"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Healthcare Industry",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Medical Science Apps.",
+  "Topic :: Text Processing",
 ]
 dependencies = [
   "PySide6>=6.6,<6.8",
@@ -19,11 +35,19 @@ dependencies = [
   "belgian-deduce @ git+https://github.com/stighellemans/belgian-deduce.git@9ebf3be36beadec03c9f3d4271099a86fd7dfc1f",
 ]
 
+[project.urls]
+Homepage = "https://github.com/stighellemans/open-anonymizer"
+Repository = "https://github.com/stighellemans/open-anonymizer"
+Issues = "https://github.com/stighellemans/open-anonymizer/issues"
+Releases = "https://github.com/stighellemans/open-anonymizer/releases"
+
 [project.optional-dependencies]
 dev = [
+  "build>=1.2,<2",
   "PyInstaller>=6.3,<7",
   "pytest>=8.0,<9",
   "pytest-qt>=4.4,<5",
+  "twine>=6.0,<7",
 ]
 
 [project.scripts]
@@ -31,6 +55,9 @@ open-anonymizer = "open_anonymizer.main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+
+[tool.setuptools.dynamic]
+version = { attr = "open_anonymizer.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

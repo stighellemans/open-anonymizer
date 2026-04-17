@@ -2,6 +2,8 @@
 
 Open Anonymizer is a local desktop application for de-identifying Dutch and French medical text. It uses the [`belgian-deduce`](https://github.com/stighellemans/belgian-deduce) backend and wraps it in a drag-and-drop interface for pasted text, `.txt` files, `.html` files, and text-based `.pdf` files.
 
+![Open Anonymizer screenshot](docs/images/open-anonymizer-demo.png)
+
 ## Features
 
 - Fully local processing. No network calls are required for de-identification.
@@ -49,6 +51,15 @@ Run the PDF starter corpus harness:
 python scripts/run_pdf_corpus.py
 ```
 
+## Build Python Packages
+
+```bash
+uv run --extra dev python -m build --sdist --wheel
+uv run --extra dev python -m twine check dist/*.tar.gz dist/*.whl
+```
+
+Tagged `v*` pushes now publish a GitHub release with the desktop installers and the Python `sdist`/wheel attached. The manual `Package Artifacts` workflow builds the same artifacts without publishing a release.
+
 ## Build Desktop Artifacts
 
 ```bash
@@ -77,12 +88,14 @@ That writes a self-contained folder to `release/web-ready/`.
 ## Packaging Notes
 
 - v1 targets macOS and Windows.
+- Tagged releases attach macOS and Windows installers plus Python `sdist` and wheel artifacts.
 - Public release assets are a zipped `.app` bundle on macOS and a `setup.exe` installer on Windows.
 - PDF extraction prefers PDFium and falls back to `pypdf` heuristics for better spacing recovery.
 - Scanned pages can use OCR fallback through bundled `tesseract_runtime` files inside the app, or through `tesseract` on `PATH` during development.
 - To ship a click-and-play build with OCR included, stage a self-contained runtime in `vendor/tesseract_runtime/` before running `python scripts/build_desktop.py`. Use `python scripts/stage_tesseract_runtime.py /path/to/runtime` to copy a prepared runtime into place.
 - The runtime should include `eng`, `fra`, `nld`, and `osd` traineddata files so Dutch/French OCR works automatically without a language choice prompt.
 - Release assets are unsigned unless signing credentials are added later.
+- The README screenshot can be regenerated with `./.venv/bin/python scripts/capture_readme_screenshot.py`, which writes `build/readme-demo/open-anonymizer-demo.pdf` before capturing the live window.
 
 The parser test matrix is documented in [docs/pdf-test-matrix.md](docs/pdf-test-matrix.md).
 The macOS signing/notarization flow is documented in [docs/macos-distribution.md](docs/macos-distribution.md).

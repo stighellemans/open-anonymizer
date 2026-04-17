@@ -32,3 +32,60 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -vv --durations=20
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install packaging tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "build>=1.2,<2" "twine>=6.0,<7"
+
+      - name: Build Python distributions
+        run: python -m build --sdist --wheel --outdir python-dist
+
+      - name: Validate Python distributions
+        run: python -m twine check python-dist/*
+
+      - name: Smoke test wheel
+        run: |
+          python -m venv .venv-wheel
+          .venv-wheel/bin/pip install --no-deps python-dist/*.whl
+          .venv-wheel/bin/python - <<'PY'
+          from importlib import metadata, resources
+          import open_anonymizer
+
+          distribution = metadata.distribution("open-anonymizer")
+          assert open_anonymizer.__version__ == distribution.version
+          assert resources.files("open_anonymizer.assets").joinpath("white_fingerprint.svg").is_file()
+          assert any(
+              entry_point.name == "open-anonymizer"
+              and entry_point.value == "open_anonymizer.main:main"
+              for entry_point in distribution.entry_points
+          )
+          PY
+
+      - name: Smoke test sdist
+        run: |
+          python -m venv .venv-sdist
+          .venv-sdist/bin/pip install --no-deps python-dist/*.tar.gz
+          .venv-sdist/bin/python - <<'PY'
+          from importlib import metadata, resources
+          import open_anonymizer
+
+          distribution = metadata.distribution("open-anonymizer")
+          assert open_anonymizer.__version__ == distribution.version
+          assert resources.files("open_anonymizer.assets").joinpath("white_fingerprint.svg").is_file()
+          assert any(
+              entry_point.name == "open-anonymizer"
+              and entry_point.value == "open_anonymizer.main:main"
+              for entry_point in distribution.entry_points
+          )
+          PY
