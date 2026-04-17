@@ -47,6 +47,16 @@ jobs:
         if: matrix.platform == 'windows'
         run: python scripts/build_windows_installer.py
 
+      - name: Create stable Windows download alias
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "release/OpenAnonymizer-*-Setup.exe" | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "Could not find the versioned Windows installer in release/."
+          }
+          Copy-Item $installer.FullName "release/open-anonymizer-windows-setup.exe" -Force
+
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
