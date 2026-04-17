@@ -60,6 +60,8 @@ uv run --extra dev python -m twine check dist/*.tar.gz dist/*.whl
 
 Tagged `v*` pushes now publish a GitHub release with the desktop installers, the Python `sdist`/wheel, `SHA256SUMS.txt`, and `release-manifest.json` attached. The manual `Package Artifacts` workflow assembles the same release-asset bundle as workflow artifacts without publishing a release.
 
+The repository's GitHub `Packages` section is populated by publishing that same release bundle to GitHub Container Registry as `ghcr.io/stighellemans/open-anonymizer-release-bundle`.
+
 ## Build Desktop Artifacts
 
 ```bash
@@ -84,6 +86,7 @@ Tagged releases automatically flatten the uploaded build artifacts into the publ
 - v1 targets macOS and Windows.
 - Tagged releases attach the Python `sdist` and wheel to the GitHub release.
 - Tagged releases also attach `SHA256SUMS.txt` and `release-manifest.json` alongside the downloadable packages.
+- Tagged releases also publish a GHCR release-bundle package so the repository `Packages` section is populated.
 - Public release assets are DMG installers on macOS and a `setup.exe` installer on Windows.
 - PDF extraction prefers PDFium and falls back to `pypdf` heuristics for better spacing recovery.
 - Scanned pages can use OCR fallback through bundled `tesseract_runtime` files inside the app, or through `tesseract` on `PATH` during development.
