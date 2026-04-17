@@ -1,0 +1,40 @@
+name: Cleanup GitHub Package
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  delete-release-bundle-package:
+    if: contains(github.event.head_commit.message, 'Remove package publishing from release flow')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete GHCR release-bundle package if it exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          http_code="$(
+            curl -sS \
+              -o /tmp/delete-package-response.json \
+              -w "%{http_code}" \
+              -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "https://api.github.com/user/packages/container/open-anonymizer-release-bundle"
+          )"
+
+          if [ "${http_code}" = "204" ] || [ "${http_code}" = "404" ]; then
+            cat /tmp/delete-package-response.json || true
+            exit 0
+          fi
+
+          echo "Package deletion failed with HTTP ${http_code}."
+          cat /tmp/delete-package-response.json
+          exit 1

@@ -58,9 +58,7 @@ uv run --extra dev python -m build --sdist --wheel
 uv run --extra dev python -m twine check dist/*.tar.gz dist/*.whl
 ```
 
-Tagged `v*` pushes now publish a GitHub release with the desktop installers, the Python `sdist`/wheel, `SHA256SUMS.txt`, and `release-manifest.json` attached. The manual `Package Artifacts` workflow assembles the same release-asset bundle as workflow artifacts without publishing a release.
-
-The repository's GitHub `Packages` section is populated by publishing that same release bundle to GitHub Container Registry as `ghcr.io/stighellemans/open-anonymizer-release-bundle`.
+Tagged `v*` pushes now publish a GitHub release with the desktop installers attached. The manual `Installer Artifacts` workflow builds the same installers without publishing a release.
 
 ## Build Desktop Artifacts
 
@@ -79,14 +77,16 @@ python scripts/build_windows_installer.py
 
 That writes a `setup.exe` style installer to `release/`.
 
-Tagged releases automatically flatten the uploaded build artifacts into the published GitHub release assets and add `SHA256SUMS.txt` plus `release-manifest.json` for download verification.
+Tagged releases publish exactly these installer assets:
+
+- `open-anonymizer-macos-arm64.dmg`
+- `open-anonymizer-macos-x64.dmg`
+- `open-anonymizer-windows-setup.exe`
 
 ## Packaging Notes
 
 - v1 targets macOS and Windows.
-- Tagged releases attach the Python `sdist` and wheel to the GitHub release.
-- Tagged releases also attach `SHA256SUMS.txt` and `release-manifest.json` alongside the downloadable packages.
-- Tagged releases also publish a GHCR release-bundle package so the repository `Packages` section is populated.
+- Tagged releases attach only the macOS and Windows installer files to the GitHub release.
 - Public release assets are DMG installers on macOS and a `setup.exe` installer on Windows.
 - PDF extraction prefers PDFium and falls back to `pypdf` heuristics for better spacing recovery.
 - Scanned pages can use OCR fallback through bundled `tesseract_runtime` files inside the app, or through `tesseract` on `PATH` during development.
