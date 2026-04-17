@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import tempfile
 import time
@@ -73,6 +74,26 @@ def _stamp_dmg_icon(dmg_path: Path, icon_path: Path, temp_dir: Path) -> None:
     _run(["SetFile", "-a", "C", str(dmg_path)])
 
 
+def _available_macos_icon_tools(*tool_names: str) -> bool:
+    return all(shutil.which(tool_name) is not None for tool_name in tool_names)
+
+
+def _maybe_apply_volume_icon(mountpoint: Path, icon_path: Path) -> None:
+    if not _available_macos_icon_tools("SetFile"):
+        print("Skipping DMG volume icon metadata because SetFile is unavailable.")
+        return
+
+    _apply_volume_icon(mountpoint, icon_path)
+
+
+def _maybe_stamp_dmg_icon(dmg_path: Path, icon_path: Path, temp_dir: Path) -> None:
+    if not _available_macos_icon_tools("sips", "DeRez", "Rez", "SetFile"):
+        print("Skipping DMG file icon stamping because developer tools are unavailable.")
+        return
+
+    _stamp_dmg_icon(dmg_path, icon_path, temp_dir)
+
+
 def _detach_image(mountpoint: Path, *, retries: int = 4, retry_delay_seconds: float = 1.0) -> None:
     for attempt in range(retries):
         try:
@@ -138,7 +159,7 @@ def build_dmg(
                 ]
             )
             attached = True
-            _apply_volume_icon(mountpoint, icon_path)
+            _maybe_apply_volume_icon(mountpoint, icon_path)
         finally:
             if attached:
                 _detach_image(mountpoint)
@@ -157,7 +178,7 @@ def build_dmg(
                 str(output_path),
             ]
         )
-        _stamp_dmg_icon(output_path, icon_path, temp_dir)
+        _maybe_stamp_dmg_icon(output_path, icon_path, temp_dir)
 
     return output_path
 

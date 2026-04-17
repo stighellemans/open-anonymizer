@@ -59,6 +59,7 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(build_macos_dmg.subprocess, "run", fake_run)
+    monkeypatch.setattr(build_macos_dmg.shutil, "which", lambda command: f"/usr/bin/{command}")
     monkeypatch.setattr(
         build_macos_dmg.tempfile,
         "TemporaryDirectory",
@@ -128,6 +129,97 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
         ["DeRez", "-only", "icns", str(icon_path)],
         ["Rez", "-append", str(icon_resource_path), "-o", str(output_path)],
         ["SetFile", "-a", "C", str(output_path)],
+    ]
+
+
+def test_build_dmg_skips_custom_icons_when_developer_tools_are_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    build_macos_dmg = _load_build_macos_dmg_module()
+    app_path = tmp_path / "dist" / build_macos_dmg.APP_BUNDLE_NAME
+    icon_path = tmp_path / "build" / "OpenAnonymizer.icns"
+    output_path = tmp_path / "release" / "open-anonymizer-macos.dmg"
+    temp_dir = tmp_path / "temp"
+
+    app_path.mkdir(parents=True)
+    icon_path.parent.mkdir(parents=True, exist_ok=True)
+    icon_path.write_bytes(b"icns")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, check=True, stdout=None):
+        commands.append(command)
+        if command[:2] == ["hdiutil", "convert"]:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"dmg")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(build_macos_dmg.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        build_macos_dmg.shutil,
+        "which",
+        lambda command: None if command in {"SetFile", "DeRez", "Rez"} else f"/usr/bin/{command}",
+    )
+    monkeypatch.setattr(
+        build_macos_dmg.tempfile,
+        "TemporaryDirectory",
+        lambda: _TemporaryDirectoryStub(temp_dir),
+    )
+
+    dmg_path = build_macos_dmg.build_dmg(
+        app_path=app_path,
+        output_path=output_path,
+        icon_path=icon_path,
+        volume_name=build_macos_dmg.DEFAULT_VOLUME_NAME,
+    )
+
+    staging_root = temp_dir / "staging"
+    mountpoint = temp_dir / "mount"
+    rw_dmg_path = temp_dir / "OpenAnonymizer-readwrite.dmg"
+
+    assert dmg_path == output_path
+    assert (staging_root / "Applications").is_symlink()
+    assert output_path.exists()
+    assert commands == [
+        ["ditto", str(app_path), str(staging_root / app_path.name)],
+        [
+            "hdiutil",
+            "create",
+            "-ov",
+            "-fs",
+            "HFS+",
+            "-format",
+            "UDRW",
+            "-volname",
+            build_macos_dmg.DEFAULT_VOLUME_NAME,
+            "-srcfolder",
+            str(staging_root),
+            str(rw_dmg_path),
+        ],
+        [
+            "hdiutil",
+            "attach",
+            "-readwrite",
+            "-noverify",
+            "-noautoopen",
+            str(rw_dmg_path),
+            "-mountpoint",
+            str(mountpoint),
+        ],
+        ["hdiutil", "detach", str(mountpoint)],
+        [
+            "hdiutil",
+            "convert",
+            str(rw_dmg_path),
+            "-ov",
+            "-format",
+            "UDZO",
+            "-imagekey",
+            "zlib-level=9",
+            "-o",
+            str(output_path),
+        ],
     ]
 
 
