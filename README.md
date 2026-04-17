@@ -7,7 +7,7 @@ Open Anonymizer is a local desktop application for de-identifying Dutch and Fren
 - Fully local processing. No network calls are required for de-identification.
 - Drag and drop multiple `.txt`, `.html`, and `.pdf` files into the window.
 - Paste raw text directly into the app and add it as a document.
-- Customize anonymization from a popup with patient first name, last name, birthdate, other people and addresses to always hide, and per-category recognition toggles.
+- Open anonymization settings from a popup with patient first name, last name, birthdate, other people and addresses to always hide, and per-category recognition toggles.
 - Switch between bracketed placeholders and smart pseudonyms for more readable review output.
 - Automatically de-identify newly added documents and re-run processing when anonymization settings change.
 - Persist anonymization settings across launches.

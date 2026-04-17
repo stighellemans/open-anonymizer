@@ -823,14 +823,14 @@ def test_main_window_applies_dialog_settings(qtbot, monkeypatch) -> None:
     button = next(
         button
         for button in window.findChildren(QPushButton)
-        if button.text() == "Customize anonymization"
+        if button.text() == "Settings"
     )
     button.click()
 
     assert window.anonymization_settings.first_name == "Ada"
     assert window.anonymization_settings.mode == "smart_pseudonyms"
     assert window.anonymization_settings.deidentify_filenames is False
-    assert window.customize_anonymization_button.text() == "Customize anonymization"
+    assert window.customize_anonymization_button.text() == "Settings"
     assert window.findChild(QLabel, "anonymizationSummaryBody") is None
 
 
@@ -874,7 +874,7 @@ def test_main_window_keeps_customize_button_available_for_pasted_text(qtbot, mon
         timeout=3000,
     )
 
-    assert window.customize_anonymization_button.text() == "Customize anonymization"
+    assert window.customize_anonymization_button.text() == "Settings"
 
 
 def test_main_window_auto_processes_new_documents_and_reprocesses_after_settings_change(
@@ -1386,4 +1386,4 @@ def test_main_window_restores_saved_settings(qtbot) -> None:
         deidentify_filenames=False,
         mode="smart_pseudonyms",
     )
-    assert window.customize_anonymization_button.text() == "Customize anonymization"
+    assert window.customize_anonymization_button.text() == "Settings"

@@ -923,7 +923,7 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(layout_profile.left_panel_spacing)
 
-        self.customize_anonymization_button = QPushButton("Customize anonymization")
+        self.customize_anonymization_button = QPushButton("Settings")
         self.customize_anonymization_button.setSizePolicy(
             QSizePolicy.Policy.Maximum,
             QSizePolicy.Policy.Fixed,
