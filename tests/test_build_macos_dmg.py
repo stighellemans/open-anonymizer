@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import plistlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,21 @@ class _TemporaryDirectoryStub:
         return None
 
 
+def _attach_output(device_identifier: str, mountpoint: Path) -> bytes:
+    return plistlib.dumps(
+        {
+            "system-entities": [
+                {"dev-entry": device_identifier, "potentially-mountable": 1},
+                {
+                    "content-hint": "Apple_HFS",
+                    "dev-entry": f"{device_identifier}s1",
+                    "mount-point": str(mountpoint),
+                },
+            ]
+        }
+    )
+
+
 def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path: Path) -> None:
     build_macos_dmg = _load_build_macos_dmg_module()
     app_path = tmp_path / "dist" / build_macos_dmg.APP_BUNDLE_NAME
@@ -48,9 +64,16 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
     icon_path.write_bytes(b"icns")
 
     commands: list[list[str]] = []
+    device_identifier = "/dev/disk9"
 
-    def fake_run(command, check=True, stdout=None):
+    def fake_run(command, check=True, stdout=None, stderr=None):
         commands.append(command)
+        if command[:3] == ["hdiutil", "attach", "-plist"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=_attach_output(device_identifier, temp_dir / "mount"),
+                stderr=b"",
+            )
         if command[:2] == ["DeRez", "-only"] and stdout is not None:
             stdout.write(b"icns-resource")
         if command[:2] == ["hdiutil", "convert"]:
@@ -102,6 +125,7 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
         [
             "hdiutil",
             "attach",
+            "-plist",
             "-readwrite",
             "-noverify",
             "-noautoopen",
@@ -112,7 +136,7 @@ def test_build_dmg_invokes_expected_macos_packaging_tools(monkeypatch, tmp_path:
         ["ditto", str(icon_path), str(volume_icon_path)],
         ["SetFile", "-a", "C", str(mountpoint)],
         ["SetFile", "-a", "V", str(volume_icon_path)],
-        ["hdiutil", "detach", str(mountpoint)],
+        ["hdiutil", "detach", device_identifier],
         [
             "hdiutil",
             "convert",
@@ -147,9 +171,16 @@ def test_build_dmg_skips_custom_icons_when_developer_tools_are_unavailable(
     icon_path.write_bytes(b"icns")
 
     commands: list[list[str]] = []
+    device_identifier = "/dev/disk9"
 
-    def fake_run(command, check=True, stdout=None):
+    def fake_run(command, check=True, stdout=None, stderr=None):
         commands.append(command)
+        if command[:3] == ["hdiutil", "attach", "-plist"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=_attach_output(device_identifier, temp_dir / "mount"),
+                stderr=b"",
+            )
         if command[:2] == ["hdiutil", "convert"]:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(b"dmg")
@@ -200,6 +231,7 @@ def test_build_dmg_skips_custom_icons_when_developer_tools_are_unavailable(
         [
             "hdiutil",
             "attach",
+            "-plist",
             "-readwrite",
             "-noverify",
             "-noautoopen",
@@ -207,7 +239,7 @@ def test_build_dmg_skips_custom_icons_when_developer_tools_are_unavailable(
             "-mountpoint",
             str(mountpoint),
         ],
-        ["hdiutil", "detach", str(mountpoint)],
+        ["hdiutil", "detach", device_identifier],
         [
             "hdiutil",
             "convert",
@@ -227,24 +259,43 @@ def test_detach_image_retries_then_forces_on_resource_busy(monkeypatch, tmp_path
     build_macos_dmg = _load_build_macos_dmg_module()
     mountpoint = tmp_path / "mount"
     mountpoint.mkdir()
+    device_identifier = "/dev/disk9"
 
     commands: list[list[str]] = []
     sleep_calls: list[float] = []
 
-    def fake_run(command, check=True, stdout=None):
+    def fake_run(command, check=True, stdout=None, stderr=None):
         commands.append(command)
-        if command == ["hdiutil", "detach", str(mountpoint)]:
+        if command == ["hdiutil", "detach", device_identifier]:
             raise build_macos_dmg.subprocess.CalledProcessError(16, command)
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(build_macos_dmg.subprocess, "run", fake_run)
     monkeypatch.setattr(build_macos_dmg.time, "sleep", sleep_calls.append)
 
-    build_macos_dmg._detach_image(mountpoint, retries=2, retry_delay_seconds=0.25)
+    build_macos_dmg._detach_image(
+        mountpoint,
+        device_identifier=device_identifier,
+        retries=2,
+        retry_delay_seconds=0.25,
+    )
 
     assert commands == [
-        ["hdiutil", "detach", str(mountpoint)],
-        ["hdiutil", "detach", str(mountpoint)],
-        ["hdiutil", "detach", str(mountpoint), "-force"],
+        ["hdiutil", "detach", device_identifier],
+        ["hdiutil", "detach", device_identifier],
+        ["hdiutil", "detach", device_identifier, "-force"],
     ]
     assert sleep_calls == [0.25]
+
+
+def test_attached_device_identifier_uses_base_disk_for_mounted_partition(tmp_path: Path) -> None:
+    build_macos_dmg = _load_build_macos_dmg_module()
+    mountpoint = tmp_path / "mount"
+
+    assert (
+        build_macos_dmg._attached_device_identifier(
+            _attach_output("/dev/disk9", mountpoint),
+            mountpoint,
+        )
+        == "/dev/disk9"
+    )

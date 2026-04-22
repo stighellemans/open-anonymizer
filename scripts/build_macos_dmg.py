@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,8 +47,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run(command: list[str], *, stdout=None) -> None:
-    subprocess.run(command, check=True, stdout=stdout)
+def _run(command: list[str], *, stdout=None, capture_output: bool = False):
+    if capture_output:
+        return subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    return subprocess.run(command, check=True, stdout=stdout)
 
 
 def _stage_app_bundle(app_path: Path, staging_root: Path) -> None:
@@ -94,10 +104,77 @@ def _maybe_stamp_dmg_icon(dmg_path: Path, icon_path: Path, temp_dir: Path) -> No
     _stamp_dmg_icon(dmg_path, icon_path, temp_dir)
 
 
-def _detach_image(mountpoint: Path, *, retries: int = 4, retry_delay_seconds: float = 1.0) -> None:
+def _base_disk_identifier(device_identifier: str) -> str:
+    base_identifier = device_identifier
+    while re.search(r"s\d+$", base_identifier):
+        base_identifier = re.sub(r"s\d+$", "", base_identifier)
+    return base_identifier
+
+
+def _attached_device_identifier(attach_output: bytes, mountpoint: Path) -> str | None:
+    try:
+        attach_info = plistlib.loads(attach_output)
+    except plistlib.InvalidFileException:
+        return None
+
+    entities = attach_info.get("system-entities", [])
+    mountpoint_text = str(mountpoint)
+
+    for entity in entities:
+        if entity.get("mount-point") != mountpoint_text:
+            continue
+        device_identifier = entity.get("dev-entry")
+        if isinstance(device_identifier, str) and device_identifier:
+            return _base_disk_identifier(device_identifier)
+
+    for entity in entities:
+        device_identifier = entity.get("dev-entry")
+        if isinstance(device_identifier, str) and device_identifier:
+            return _base_disk_identifier(device_identifier)
+
+    return None
+
+
+def _attach_image(rw_dmg_path: Path, mountpoint: Path) -> str | None:
+    result = _run(
+        [
+            "hdiutil",
+            "attach",
+            "-plist",
+            "-readwrite",
+            "-noverify",
+            "-noautoopen",
+            str(rw_dmg_path),
+            "-mountpoint",
+            str(mountpoint),
+        ],
+        capture_output=True,
+    )
+    return _attached_device_identifier(result.stdout, mountpoint)
+
+
+def _detach_error_indicates_missing_target(error: subprocess.CalledProcessError) -> bool:
+    output_parts: list[str] = []
+    for stream in (error.stdout, error.stderr):
+        if isinstance(stream, bytes):
+            output_parts.append(stream.decode("utf-8", errors="ignore"))
+        elif isinstance(stream, str):
+            output_parts.append(stream)
+    return "no such file or directory" in " ".join(output_parts).lower()
+
+
+def _detach_image(
+    mountpoint: Path,
+    *,
+    device_identifier: str | None = None,
+    retries: int = 4,
+    retry_delay_seconds: float = 1.0,
+) -> None:
+    detach_target = device_identifier or str(mountpoint)
+
     for attempt in range(retries):
         try:
-            _run(["hdiutil", "detach", str(mountpoint)])
+            _run(["hdiutil", "detach", detach_target])
             return
         except subprocess.CalledProcessError as error:
             if error.returncode != 16:
@@ -106,7 +183,12 @@ def _detach_image(mountpoint: Path, *, retries: int = 4, retry_delay_seconds: fl
                 break
             time.sleep(retry_delay_seconds)
 
-    _run(["hdiutil", "detach", str(mountpoint), "-force"])
+    try:
+        _run(["hdiutil", "detach", detach_target, "-force"])
+    except subprocess.CalledProcessError as error:
+        if _detach_error_indicates_missing_target(error):
+            return
+        raise
 
 
 def build_dmg(
@@ -145,24 +227,17 @@ def build_dmg(
         )
 
         attached = False
+        attached_device_identifier: str | None = None
         try:
-            _run(
-                [
-                    "hdiutil",
-                    "attach",
-                    "-readwrite",
-                    "-noverify",
-                    "-noautoopen",
-                    str(rw_dmg_path),
-                    "-mountpoint",
-                    str(mountpoint),
-                ]
-            )
+            attached_device_identifier = _attach_image(rw_dmg_path, mountpoint)
             attached = True
             _maybe_apply_volume_icon(mountpoint, icon_path)
         finally:
             if attached:
-                _detach_image(mountpoint)
+                _detach_image(
+                    mountpoint,
+                    device_identifier=attached_device_identifier,
+                )
 
         _run(
             [

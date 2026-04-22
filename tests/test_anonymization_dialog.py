@@ -351,9 +351,11 @@ def test_dialog_enables_filename_deidentification_by_default(qtbot) -> None:
 def test_dialog_uses_compact_scrollable_layout(qtbot) -> None:
     dialog = AnonymizationDialog(AnonymizationSettings())
     qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog.scroll_area.verticalScrollBar().maximum() > 0)
 
     assert dialog.height() <= 480
-    assert dialog.minimumHeight() < dialog.sizeHint().height()
+    assert dialog.scroll_area.widget().sizeHint().height() > dialog.scroll_area.viewport().height()
 
 
 def test_toggle_switch_is_clickable_across_entire_track(qtbot) -> None:
