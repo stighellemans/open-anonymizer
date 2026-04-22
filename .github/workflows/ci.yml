@@ -64,7 +64,7 @@ jobs:
 
           distribution = metadata.distribution("open-anonymizer")
           assert open_anonymizer.__version__ == distribution.version
-          assert "belgian-deduce==4.0.0" in (distribution.requires or [])
+          assert "belgian-deduce==4.1.0" in (distribution.requires or [])
           assert resources.files("open_anonymizer.assets").joinpath("white_fingerprint.svg").is_file()
           assert any(
               entry_point.name == "open-anonymizer"
@@ -83,7 +83,7 @@ jobs:
 
           distribution = metadata.distribution("open-anonymizer")
           assert open_anonymizer.__version__ == distribution.version
-          assert "belgian-deduce==4.0.0" in (distribution.requires or [])
+          assert "belgian-deduce==4.1.0" in (distribution.requires or [])
           assert resources.files("open_anonymizer.assets").joinpath("white_fingerprint.svg").is_file()
           assert any(
               entry_point.name == "open-anonymizer"

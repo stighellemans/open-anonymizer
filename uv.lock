@@ -27,7 +27,7 @@ wheels = [
 
 [[package]]
 name = "belgian-deduce"
-version = "4.0.0"
+version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docdeid" },
@@ -36,9 +36,9 @@ dependencies = [
     { name = "rapidfuzz", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "regex" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/3d/1ac2efd8b3d67f94a442a149042930f3e9384f368f5b9a4b496cdd8f7b0e/belgian_deduce-4.0.0.tar.gz", hash = "sha256:e3982a36538cc8a7a6523c6a4be44edec1694dc31de6bc40f7ab66b754f0b7a6", size = 1812566, upload-time = "2026-04-17T09:02:42.265Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/f0/c65b21ac193d521d4c3a2ea991afd41370ef30c0ebff50df8e70b03ac968/belgian_deduce-4.1.0.tar.gz", hash = "sha256:04021fbb7b3f49e07b33793b920a7a420ad65f7743d33f2157e7f7c1319ec846", size = 1830381, upload-time = "2026-04-22T12:08:51.078Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/ea/8c4c218cc5e9520b667692e4106a4990df816e36b80c9c69a7a448fd94fd/belgian_deduce-4.0.0-py3-none-any.whl", hash = "sha256:9a95951e3f0eba1e1f396b6f87f87a1f8b81f9c0bb3127dd22bf6655256b1206", size = 8496531, upload-time = "2026-04-17T09:02:39.874Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/16/8eebd11c48cf526f31f45d61b25087f940aa066d50ef5dc2f45f1ab55579/belgian_deduce-4.1.0-py3-none-any.whl", hash = "sha256:9a0340e33f6dc97c4d8939eb79adb6cfc919c045cd7ab132bc375233453e6d4f", size = 8611850, upload-time = "2026-04-22T12:08:48.854Z" },
 ]
 
 [[package]]
@@ -720,7 +720,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "belgian-deduce", specifier = "==4.0.0" },
+    { name = "belgian-deduce", specifier = "==4.1.0" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.3,<7" },
     { name = "pypdf", specifier = ">=5.7,<6" },

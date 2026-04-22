@@ -11,6 +11,7 @@ Open Anonymizer is a local desktop application for de-identifying Dutch and Fren
 - Paste raw text directly into the app and add it as a document.
 - Open anonymization settings from a popup with patient first name, last name, birthdate, other people and addresses to always hide, and per-category recognition toggles.
 - Switch between bracketed placeholders and smart pseudonyms for more readable review output.
+- Bundle `belgian-deduce` 4.1.0 with broader Wallonia and Brussels lookup coverage for hospitals, institutions, and postal localities.
 - Automatically de-identify newly added documents and re-run processing when anonymization settings change.
 - Persist anonymization settings across launches.
 - Review each processed document, copy the output, and export all successful results as a ZIP archive.
@@ -23,7 +24,7 @@ Open Anonymizer is a local desktop application for de-identifying Dutch and Fren
 
 - Python 3.9
 - PySide6
-- `belgian-deduce==4.0.0` from PyPI
+- `belgian-deduce==4.1.0` from PyPI
 - `pypdfium2` with `pypdf` fallbacks for text-based PDF extraction
 - PyInstaller for desktop packaging
 

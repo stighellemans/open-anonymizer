@@ -6,6 +6,7 @@ import pytest
 
 from open_anonymizer.models import AnonymizationSettings, RecognitionFlags
 from open_anonymizer.services.deduce_backend import (
+    analyze_text,
     build_backend_config,
     build_backend_metadata,
     deidentify_text,
@@ -115,6 +116,39 @@ def test_deidentify_text_matches_reordered_custom_name_and_address_variants() ->
     )
 
     assert result == "[PERSON-1] habite [LOCATION-1]."
+
+
+def test_analyze_text_matches_wallonia_hospital_site_as_single_annotation() -> None:
+    analysis = analyze_text(
+        "Consultation au CHU UCL Namur - Site GODINNE.",
+        AnonymizationSettings(),
+    )
+
+    assert [(annotation.text, annotation.tag) for annotation in analysis.annotations] == [
+        ("CHU UCL Namur - Site GODINNE", "hospital")
+    ]
+
+
+def test_analyze_text_matches_brussels_hospital_campus_as_single_annotation() -> None:
+    analysis = analyze_text(
+        "Consultation à IRIS ZIEKENHUIZEN ZUID - Campus ETTERBEEK/ELSENE.",
+        AnonymizationSettings(),
+    )
+
+    assert [(annotation.text, annotation.tag) for annotation in analysis.annotations] == [
+        ("IRIS ZIEKENHUIZEN ZUID - Campus ETTERBEEK/ELSENE", "hospital")
+    ]
+
+
+def test_analyze_text_matches_brussels_postcode_locality_as_single_annotation() -> None:
+    analysis = analyze_text(
+        "Adresse: 1000 Bruxelles.",
+        AnonymizationSettings(),
+    )
+
+    assert [(annotation.text, annotation.tag) for annotation in analysis.annotations] == [
+        ("1000 Bruxelles", "location")
+    ]
 
 
 @pytest.mark.parametrize(
