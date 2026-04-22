@@ -220,6 +220,18 @@ QFrame#dropArea[dragActive="true"] {
 QFrame#dropArea[dragActive="true"] QLabel#dropAreaLabel {
     background: transparent;
 }
+QFrame#startupSetupCard {
+    background: #fbfaf8;
+    border: 1px solid #d6d0c8;
+    border-radius: 16px;
+}
+QLabel#startupSetupTitle {
+    font-size: 28px;
+    font-weight: 700;
+}
+QLabel#startupSetupError {
+    color: #b91c1c;
+}
 """
 
 
@@ -240,7 +252,7 @@ def main() -> int:
     app.setStyleSheet(APP_STYLESHEET)
     app.setWindowIcon(application_icon())
 
-    window = MainWindow()
+    window = MainWindow(show_startup_setup=True)
     window.show()
     window.schedule_background_backend_warmup(
         STARTUP_BACKEND_WARMUP_DELAY_MS,

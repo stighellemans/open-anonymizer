@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from html import escape
 
 from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, QSize, Qt, Signal
@@ -85,6 +86,7 @@ _DATE_SHIFT_NEGATIVE_STEP_COUNT = (
     DATE_SHIFT_MAX_ABS_DAYS - DATE_SHIFT_SAFE_MIN_DAYS + 1
 )
 DATE_SHIFT_SLIDER_MAX = (_DATE_SHIFT_NEGATIVE_STEP_COUNT * 2) - 1
+SMART_PLACEHOLDER_EXAMPLE_SOURCE_DATE = date(1980, 3, 12)
 
 
 def _format_tooltip_html(text: str) -> str:
@@ -586,36 +588,203 @@ class AddressEntryRow(QWidget):
             self._on_remove(self)
 
 
-class AnonymizationDialog(QDialog):
+FORM_STYLESHEET = """
+QScrollArea {
+    border: none;
+    background: #ffffff;
+}
+QWidget#dialogViewport {
+    background: #ffffff;
+}
+QWidget#dialogBody {
+    background: #ffffff;
+}
+QToolTip {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 7px;
+    color: #f9fafb;
+    font-size: 11px;
+    padding: 4px 6px;
+}
+QLabel#sectionTitle {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#sectionDescription {
+    color: #6b7280;
+    font-size: 12px;
+}
+QLabel#fieldLabel {
+    color: #4b5563;
+    font-size: 12px;
+    font-weight: 500;
+}
+QLabel#optionTitle {
+    color: #111827;
+    font-size: 13px;
+    font-weight: 600;
+}
+QLabel#optionDescription {
+    color: #6b7280;
+    font-size: 12px;
+}
+QFrame#smartPlaceholderExamples, QFrame#deidentifyFilenameExamples {
+    background: #f8fafc;
+    border: 1px solid #dbe2ea;
+    border-radius: 10px;
+}
+QLabel#smartPlaceholderExampleHeader, QLabel#filenameExampleHeader {
+    color: #4b5563;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#smartPlaceholderExampleValue, QLabel#filenameExampleValue {
+    color: #111827;
+    font-size: 12px;
+}
+QToolButton[infoHintButton="true"] {
+    background: transparent;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    color: #6b7280;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 0;
+}
+QToolButton[infoHintButton="true"]:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+    color: #111827;
+}
+QToolButton[infoHintButton="true"]:pressed {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+    color: #111827;
+}
+QToolButton[infoHintButton="true"]:focus {
+    outline: none;
+}
+QLabel#dateShiftBubble {
+    background: #111827;
+    border-radius: 8px;
+    color: #f9fafb;
+    font-size: 10px;
+    font-weight: 600;
+    min-height: 16px;
+    padding: 0 6px;
+}
+QLabel#dateShiftLimitLabel {
+    color: #9ca3af;
+    font-size: 10px;
+    font-weight: 500;
+}
+QFrame#sectionDivider {
+    background: #e5e7eb;
+    min-height: 1px;
+    max-height: 1px;
+}
+QFrame#rowDivider {
+    background: #eef2f7;
+    min-height: 1px;
+    max-height: 1px;
+}
+QLineEdit {
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    color: #111827;
+    padding: 7px 10px;
+}
+QLineEdit:focus {
+    border-color: #111827;
+}
+QSlider#dateShiftSlider {
+    min-height: 16px;
+}
+QSlider#dateShiftSlider::groove:horizontal {
+    background: #e5e7eb;
+    border-radius: 2px;
+    height: 4px;
+}
+QSlider#dateShiftSlider::sub-page:horizontal {
+    background: #111827;
+    border-radius: 2px;
+}
+QSlider#dateShiftSlider::add-page:horizontal {
+    background: #e5e7eb;
+    border-radius: 2px;
+}
+QSlider#dateShiftSlider::handle:horizontal {
+    background: #ffffff;
+    border: 1px solid #111827;
+    border-radius: 6px;
+    height: 12px;
+    margin: -4px 0;
+    width: 12px;
+}
+QSlider#dateShiftSlider::handle:horizontal:hover {
+    background: #f9fafb;
+}
+QSlider#dateShiftSlider::handle:horizontal:pressed {
+    background: #f3f4f6;
+}
+QCheckBox {
+    color: #111827;
+    spacing: 8px;
+}
+QPushButton {
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    color: #111827;
+    min-height: 32px;
+    padding: 0 14px;
+}
+QPushButton:hover {
+    background: #f9fafb;
+}
+QPushButton#primaryButton {
+    background: #111827;
+    border-color: #111827;
+    color: #f9fafb;
+}
+QPushButton#primaryButton:hover {
+    background: #1f2937;
+}
+"""
+
+
+class AnonymizationSettingsForm(QWidget):
     def __init__(
         self,
         anonymization_settings: AnonymizationSettings,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._accepted_settings: AnonymizationSettings | None = None
         self._checkboxes: dict[str, QCheckBox] = {}
         self._date_shift_override_enabled = False
         self._syncing_date_shift_slider = False
         self.other_person_rows: list[PersonEntryRow] = []
         self.address_rows: list[AddressEntryRow] = []
 
-        self.setWindowTitle("Customize anonymization")
-        self.resize(700, 480)
-        self.setMinimumSize(620, 320)
         self._build_ui()
-        self._load_settings(anonymization_settings)
+        self.load_settings(anonymization_settings)
 
     def _build_ui(self) -> None:
+        self.setStyleSheet(FORM_STYLESHEET)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_area.viewport().setObjectName("dialogViewport")
+        self.scroll_area = scroll_area
 
         content = QWidget()
         content.setObjectName("dialogBody")
@@ -625,99 +794,47 @@ class AnonymizationDialog(QDialog):
         scroll_area.setWidget(content)
         layout.addWidget(scroll_area, 1)
 
-        content_layout.addWidget(self._section_title("Options"))
-        options_layout = QVBoxLayout()
-        options_layout.setContentsMargins(0, 0, 0, 0)
-        options_layout.setSpacing(0)
-
-        self.smart_mode_toggle = ToggleSwitch()
-        self.smart_mode_toggle.setToolTip(MODE_HINTS["smart_pseudonyms"])
-        self.smart_mode_toggle.toggled.connect(self._handle_smart_date_shift_state_changed)
-        options_layout.addWidget(
-            self._option_row(
-                MODE_LABELS["smart_pseudonyms"],
-                "Use realistic replacements for names, institutions, and dates.",
-                self.smart_mode_toggle,
-                info_text=INFO_HINTS["smart_pseudonyms"],
-                info_button_name="smartPlaceholdersInfoButton",
-            )
-        )
-        self.date_shift_days_slider = DateShiftSlider()
-        self.date_shift_days_slider.valueChanged.connect(
-            self._handle_date_shift_slider_changed
-        )
-        self.smart_date_shift_row = self._smart_date_shift_row()
-        options_layout.addWidget(self.smart_date_shift_row)
-        options_layout.addWidget(self._row_divider())
-
-        self.deidentify_filenames_toggle = ToggleSwitch()
-        self.deidentify_filenames_toggle.setChecked(True)
-        options_layout.addWidget(
-            self._option_row(
-                "De-identify exported filenames",
-                "Rename exported files with anonymized names.",
-                self.deidentify_filenames_toggle,
-                info_text=INFO_HINTS["deidentify_filenames"],
-                info_button_name="deidentifyFilenamesInfoButton",
-            )
-        )
-        content_layout.addLayout(options_layout)
-        content_layout.addWidget(self._section_divider())
-
         content_layout.addWidget(
             self._section_heading(
-                "General recognition",
-                INFO_HINTS["general_recognition"],
-                info_button_name="generalRecognitionInfoButton",
-            )
-        )
-        recognition_layout = QGridLayout()
-        recognition_layout.setContentsMargins(0, 0, 0, 0)
-        recognition_layout.setHorizontalSpacing(18)
-        recognition_layout.setVerticalSpacing(8)
-
-        for index, name in enumerate(RECOGNITION_GROUPS):
-            checkbox = QCheckBox(RECOGNITION_LABELS[name])
-            self._checkboxes[name] = checkbox
-            recognition_layout.addWidget(checkbox, index // 3, index % 3)
-
-        for column in range(3):
-            recognition_layout.setColumnStretch(column, 1)
-
-        content_layout.addLayout(recognition_layout)
-        content_layout.addWidget(self._section_divider())
-
-        content_layout.addWidget(
-            self._section_heading(
-                "Hide specific information",
+                "Patient",
                 INFO_HINTS["specific_information"],
                 info_button_name="hideSpecificInformationInfoButton",
             )
         )
+
         patient_layout = QGridLayout()
         patient_layout.setContentsMargins(0, 0, 0, 0)
         patient_layout.setHorizontalSpacing(12)
         patient_layout.setVerticalSpacing(8)
 
         self.first_name_input = QLineEdit()
+        self.first_name_input.setPlaceholderText("First name")
         self.first_name_input.textChanged.connect(self._update_date_shift_slider_state)
         self.last_name_input = QLineEdit()
+        self.last_name_input.setPlaceholderText("Last name")
         self.last_name_input.textChanged.connect(self._update_date_shift_slider_state)
         self.birthdate_input = QLineEdit()
         self.birthdate_input.setPlaceholderText("DD/MM/YYYY")
-        self.birthdate_input.textChanged.connect(self.clear_error)
         self.birthdate_input.textChanged.connect(self._update_date_shift_slider_state)
-        patient_layout.addWidget(self._field_label("First name patient"), 0, 0)
-        patient_layout.addWidget(self._field_label("Last name patient"), 0, 1)
-        patient_layout.addWidget(self._field_label("Birthdate patient"), 0, 2)
+
+        patient_layout.addWidget(
+            self._field_label(
+                "What is your first name and last name you want the anonymizer to recognize?"
+            ),
+            0,
+            0,
+            1,
+            2,
+        )
         patient_layout.addWidget(self.first_name_input, 1, 0)
         patient_layout.addWidget(self.last_name_input, 1, 1)
-        patient_layout.addWidget(self.birthdate_input, 1, 2)
+        patient_layout.addWidget(self._field_label("What is your birthdate?"), 2, 0, 1, 2)
+        patient_layout.addWidget(self.birthdate_input, 3, 0, 1, 1)
         patient_layout.setColumnStretch(0, 1)
         patient_layout.setColumnStretch(1, 1)
-        patient_layout.setColumnStretch(2, 1)
         content_layout.addLayout(patient_layout)
 
+        content_layout.addWidget(self._section_title("Other information you want to anonymize"))
         content_layout.addWidget(self._field_label("Other people"))
         self.other_people_list = QWidget()
         self.other_people_layout = QVBoxLayout(self.other_people_list)
@@ -751,181 +868,73 @@ class AnonymizationDialog(QDialog):
             0,
             Qt.AlignmentFlag.AlignLeft,
         )
+        content_layout.addWidget(self._section_divider())
 
+        content_layout.addWidget(
+            self._section_heading(
+                "Which categories do you want the system to detect and anonymize?",
+                INFO_HINTS["general_recognition"],
+                info_button_name="generalRecognitionInfoButton",
+            )
+        )
+        recognition_layout = QGridLayout()
+        recognition_layout.setContentsMargins(0, 0, 0, 0)
+        recognition_layout.setHorizontalSpacing(18)
+        recognition_layout.setVerticalSpacing(8)
+
+        for index, name in enumerate(RECOGNITION_GROUPS):
+            checkbox = QCheckBox(RECOGNITION_LABELS[name])
+            self._checkboxes[name] = checkbox
+            recognition_layout.addWidget(checkbox, index // 3, index % 3)
+
+        for column in range(3):
+            recognition_layout.setColumnStretch(column, 1)
+
+        content_layout.addLayout(recognition_layout)
+        content_layout.addWidget(self._section_divider())
+
+        content_layout.addWidget(self._section_title("Other options"))
+        options_layout = QVBoxLayout()
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(0)
+
+        self.smart_mode_toggle = ToggleSwitch()
+        self.smart_mode_toggle.setToolTip(MODE_HINTS["smart_pseudonyms"])
+        self.smart_mode_toggle.toggled.connect(self._handle_smart_date_shift_state_changed)
+        options_layout.addWidget(
+            self._option_row(
+                "Smart placeholders",
+                "Do you want realistic, fake replacements for the detected parts?",
+                self.smart_mode_toggle,
+                info_text=INFO_HINTS["smart_pseudonyms"],
+                info_button_name="smartPlaceholdersInfoButton",
+            )
+        )
+        options_layout.addWidget(self._smart_placeholder_examples_widget())
+        self.date_shift_days_slider = DateShiftSlider()
+        self.date_shift_days_slider.valueChanged.connect(
+            self._handle_date_shift_slider_changed
+        )
+        self._update_smart_placeholder_examples()
+        self.smart_date_shift_row = self._smart_date_shift_row()
+        options_layout.addWidget(self.smart_date_shift_row)
+        options_layout.addWidget(self._row_divider())
+
+        self.deidentify_filenames_toggle = ToggleSwitch()
+        self.deidentify_filenames_toggle.setChecked(True)
+        options_layout.addWidget(
+            self._option_row(
+                "De-identify exported filenames",
+                "Sometimes the filename itself contains personal information. "
+                "When you enable this option, that will be anonymized too.",
+                self.deidentify_filenames_toggle,
+                info_text=INFO_HINTS["deidentify_filenames"],
+                info_button_name="deidentifyFilenamesInfoButton",
+            )
+        )
+        options_layout.addWidget(self._deidentify_filename_examples_widget())
+        content_layout.addLayout(options_layout)
         content_layout.addStretch(1)
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #ffffff;
-            }
-            QScrollArea {
-                border: none;
-                background: #ffffff;
-            }
-            QWidget#dialogViewport {
-                background: #ffffff;
-            }
-            QWidget#dialogBody {
-                background: #ffffff;
-            }
-            QToolTip {
-                background: #111827;
-                border: 1px solid #1f2937;
-                border-radius: 7px;
-                color: #f9fafb;
-                font-size: 11px;
-                padding: 4px 6px;
-            }
-            QLabel#sectionTitle {
-                color: #111827;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QLabel#fieldLabel {
-                color: #4b5563;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            QLabel#optionTitle {
-                color: #111827;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QLabel#optionDescription {
-                color: #6b7280;
-                font-size: 12px;
-            }
-            QToolButton[infoHintButton="true"] {
-                background: transparent;
-                border: 1px solid #d1d5db;
-                border-radius: 8px;
-                color: #6b7280;
-                font-size: 10px;
-                font-weight: 700;
-                padding: 0;
-            }
-            QToolButton[infoHintButton="true"]:hover {
-                background: #f3f4f6;
-                border-color: #9ca3af;
-                color: #111827;
-            }
-            QToolButton[infoHintButton="true"]:pressed {
-                background: #e5e7eb;
-                border-color: #9ca3af;
-                color: #111827;
-            }
-            QToolButton[infoHintButton="true"]:focus {
-                outline: none;
-            }
-            QLabel#dateShiftBubble {
-                background: #111827;
-                border-radius: 8px;
-                color: #f9fafb;
-                font-size: 10px;
-                font-weight: 600;
-                min-height: 16px;
-                padding: 0 6px;
-            }
-            QLabel#dateShiftLimitLabel {
-                color: #9ca3af;
-                font-size: 10px;
-                font-weight: 500;
-            }
-            QFrame#sectionDivider {
-                background: #e5e7eb;
-                min-height: 1px;
-                max-height: 1px;
-            }
-            QFrame#rowDivider {
-                background: #eef2f7;
-                min-height: 1px;
-                max-height: 1px;
-            }
-            QLineEdit {
-                background: #ffffff;
-                border: 1px solid #d1d5db;
-                border-radius: 10px;
-                color: #111827;
-                padding: 7px 10px;
-            }
-            QLineEdit:focus {
-                border-color: #111827;
-            }
-            QSlider#dateShiftSlider {
-                min-height: 16px;
-            }
-            QSlider#dateShiftSlider::groove:horizontal {
-                background: #e5e7eb;
-                border-radius: 2px;
-                height: 4px;
-            }
-            QSlider#dateShiftSlider::sub-page:horizontal {
-                background: #111827;
-                border-radius: 2px;
-            }
-            QSlider#dateShiftSlider::add-page:horizontal {
-                background: #e5e7eb;
-                border-radius: 2px;
-            }
-            QSlider#dateShiftSlider::handle:horizontal {
-                background: #ffffff;
-                border: 1px solid #111827;
-                border-radius: 6px;
-                height: 12px;
-                margin: -4px 0;
-                width: 12px;
-            }
-            QSlider#dateShiftSlider::handle:horizontal:hover {
-                background: #f9fafb;
-            }
-            QSlider#dateShiftSlider::handle:horizontal:pressed {
-                background: #f3f4f6;
-            }
-            QCheckBox {
-                color: #111827;
-                spacing: 8px;
-            }
-            QPushButton {
-                background: #ffffff;
-                border: 1px solid #d1d5db;
-                border-radius: 10px;
-                color: #111827;
-                min-height: 32px;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background: #f9fafb;
-            }
-            QPushButton#primaryButton {
-                background: #111827;
-                border-color: #111827;
-                color: #f9fafb;
-            }
-            QPushButton#primaryButton:hover {
-                background: #1f2937;
-            }
-            """
-        )
-
-        self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #b91c1c;")
-        self.error_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.error_label.hide()
-        layout.addWidget(self.error_label)
-
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Save
-        )
-        self.cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
-        self.cancel_button.setObjectName("secondaryButton")
-        self.save_button = button_box.button(QDialogButtonBox.StandardButton.Save)
-        self.save_button.setObjectName("primaryButton")
-        button_box.rejected.connect(self.reject)
-        button_box.accepted.connect(self.handle_save)
-        layout.addWidget(button_box)
 
     def _field_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -942,6 +951,12 @@ class AnonymizationDialog(QDialog):
     def _section_title(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("sectionTitle")
+        return label
+
+    def _section_description(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sectionDescription")
+        label.setWordWrap(True)
         return label
 
     def _label_with_info(
@@ -1021,9 +1036,104 @@ class AnonymizationDialog(QDialog):
         layout.setContentsMargins(0, 1, 0, 6)
         layout.setSpacing(4)
 
-        layout.addWidget(self._field_label("Date shift (days)"))
+        layout.addWidget(self._field_label("Shift detected dates (days)"))
+        layout.addWidget(
+            self._section_description(
+                "Dates can leak information about when you receive care, and in young "
+                "children they can also reveal birthdates. Shift all detected dates by "
+                "a fixed amount of days to conceal this."
+            )
+        )
         layout.addWidget(self.date_shift_days_slider)
         return row
+
+    def _smart_placeholder_examples_widget(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("smartPlaceholderExamples")
+
+        layout = QGridLayout(frame)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(6)
+
+        headers = (
+            "Original",
+            "Default placeholder",
+            "Smart placeholder",
+        )
+        for column, header in enumerate(headers):
+            label = QLabel(header)
+            label.setObjectName("smartPlaceholderExampleHeader")
+            layout.addWidget(label, 0, column)
+
+        example_rows = (
+            ("Marie Dupont", "[PATIENT]", "Sophie Martin"),
+            ("12/03/1980", "[DATE-1]", ""),
+        )
+        for row_index, values in enumerate(example_rows, start=1):
+            for column, value in enumerate(values):
+                label = QLabel(value)
+                label.setObjectName("smartPlaceholderExampleValue")
+                if row_index == 2 and column == 2:
+                    self.smart_placeholder_shifted_date_label = label
+                    self.smart_placeholder_shifted_date_label.setObjectName(
+                        "smartPlaceholderExampleShiftedDate"
+                    )
+                layout.addWidget(label, row_index, column)
+
+        self._update_smart_placeholder_examples()
+        return frame
+
+    def _deidentify_filename_examples_widget(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("deidentifyFilenameExamples")
+
+        layout = QGridLayout(frame)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(6)
+
+        headers = (
+            "Original",
+            "Default placeholder",
+            "Smart placeholder",
+        )
+        for column, header in enumerate(headers):
+            label = QLabel(header)
+            label.setObjectName("filenameExampleHeader")
+            layout.addWidget(label, 0, column)
+
+        example_rows = (
+            (
+                "Jean_Dupont_report.txt",
+                "8f3a91c2de_deid.txt",
+                "8f3a91c2de_deid.txt",
+            ),
+            (
+                "12-03-1980_lab_results.pdf",
+                "4b72c1a8f0_deid.pdf",
+                "4b72c1a8f0_deid.pdf",
+            ),
+        )
+        for row_index, values in enumerate(example_rows, start=1):
+            for column, value in enumerate(values):
+                label = QLabel(value)
+                label.setObjectName("filenameExampleValue")
+                layout.addWidget(label, row_index, column)
+
+        return frame
+
+    def _update_smart_placeholder_examples(self) -> None:
+        if not hasattr(self, "smart_placeholder_shifted_date_label") or not hasattr(
+            self, "date_shift_days_slider"
+        ):
+            return
+
+        shift_days = self.date_shift_days_slider.days()
+        shifted_date = SMART_PLACEHOLDER_EXAMPLE_SOURCE_DATE + timedelta(days=shift_days)
+        self.smart_placeholder_shifted_date_label.setText(
+            f"{shifted_date.strftime('%d/%m/%Y')} ({format_date_shift_days(shift_days)})"
+        )
 
     def _row_divider(self) -> QFrame:
         divider = QFrame()
@@ -1088,8 +1198,7 @@ class AnonymizationDialog(QDialog):
 
     def _update_smart_date_shift_visibility(self, checked: bool | None = None) -> None:
         del checked
-        is_visible = self.smart_mode_toggle.isChecked()
-        self.smart_date_shift_row.setVisible(is_visible)
+        self.smart_date_shift_row.setVisible(self.smart_mode_toggle.isChecked())
 
     def _handle_smart_date_shift_state_changed(self, checked: bool) -> None:
         self._update_smart_date_shift_visibility(checked)
@@ -1123,6 +1232,7 @@ class AnonymizationDialog(QDialog):
         self.date_shift_days_slider.set_days(safe_days)
         del blocker
         self._syncing_date_shift_slider = False
+        self._update_smart_placeholder_examples()
 
     def _handle_date_shift_slider_changed(self, value: int) -> None:
         del value
@@ -1141,12 +1251,14 @@ class AnonymizationDialog(QDialog):
             self.date_shift_days_slider.setToolTip(
                 "Only used when Smart placeholders is enabled."
             )
+            self._update_smart_placeholder_examples()
             return
 
         if self._date_shift_override_enabled:
             self.date_shift_days_slider.setToolTip(
                 "Custom date shift override. The slider skips the unsafe zone between -10 and +10 days."
             )
+            self._update_smart_placeholder_examples()
             return
 
         if auto_shift_days is not None:
@@ -1154,13 +1266,15 @@ class AnonymizationDialog(QDialog):
                 f"Auto currently resolves to {format_date_shift_days(auto_shift_days)}. "
                 "Moving the slider will save a custom value."
             )
+            self._update_smart_placeholder_examples()
             return
 
         self.date_shift_days_slider.setToolTip(
             "Moving the slider will save a custom date shift."
         )
+        self._update_smart_placeholder_examples()
 
-    def _load_settings(self, anonymization_settings: AnonymizationSettings) -> None:
+    def load_settings(self, anonymization_settings: AnonymizationSettings) -> None:
         self.first_name_input.setText(anonymization_settings.first_name)
         self.last_name_input.setText(anonymization_settings.last_name)
         self.birthdate_input.setText(
@@ -1191,6 +1305,7 @@ class AnonymizationDialog(QDialog):
                 self._add_address_row(street, number, postal_code, city)
         else:
             self._add_address_row()
+
         self.deidentify_filenames_toggle.setChecked(
             anonymization_settings.deidentify_filenames
         )
@@ -1200,10 +1315,6 @@ class AnonymizationDialog(QDialog):
 
         for name, checkbox in self._checkboxes.items():
             checkbox.setChecked(getattr(anonymization_settings.recognition_flags, name))
-
-    def clear_error(self) -> None:
-        self.error_label.clear()
-        self.error_label.hide()
 
     def current_settings(self) -> AnonymizationSettings:
         birthdate = parse_birthdate(self.birthdate_input.text())
@@ -1229,6 +1340,83 @@ class AnonymizationDialog(QDialog):
                 }
             ),
         )
+
+
+class AnonymizationDialog(QDialog):
+    def __init__(
+        self,
+        anonymization_settings: AnonymizationSettings,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._accepted_settings: AnonymizationSettings | None = None
+
+        self.setWindowTitle("Customize anonymization")
+        self.resize(700, 480)
+        self.setMinimumSize(620, 360)
+        self.setStyleSheet("QDialog { background: #ffffff; }")
+        self._build_ui(anonymization_settings)
+
+    def _build_ui(self, anonymization_settings: AnonymizationSettings) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        self.form = AnonymizationSettingsForm(anonymization_settings, parent=self)
+        layout.addWidget(self.form, 1)
+        self._expose_form_fields()
+        self.birthdate_input.textChanged.connect(self.clear_error)
+
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #b91c1c;")
+        self.error_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.error_label.hide()
+        layout.addWidget(self.error_label)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Save
+        )
+        self.cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        self.cancel_button.setObjectName("secondaryButton")
+        self.save_button = button_box.button(QDialogButtonBox.StandardButton.Save)
+        self.save_button.setObjectName("primaryButton")
+        button_box.rejected.connect(self.reject)
+        button_box.accepted.connect(self.handle_save)
+        layout.addWidget(button_box)
+
+    def _expose_form_fields(self) -> None:
+        self._checkboxes = self.form._checkboxes
+        self.other_person_rows = self.form.other_person_rows
+        self.address_rows = self.form.address_rows
+        self.scroll_area = self.form.scroll_area
+        self.first_name_input = self.form.first_name_input
+        self.last_name_input = self.form.last_name_input
+        self.birthdate_input = self.form.birthdate_input
+        self.other_people_list = self.form.other_people_list
+        self.other_people_layout = self.form.other_people_layout
+        self.add_other_person_button = self.form.add_other_person_button
+        self.address_list = self.form.address_list
+        self.address_layout = self.form.address_layout
+        self.add_address_button = self.form.add_address_button
+        self.smart_mode_toggle = self.form.smart_mode_toggle
+        self.date_shift_days_slider = self.form.date_shift_days_slider
+        self.smart_date_shift_row = self.form.smart_date_shift_row
+        self.deidentify_filenames_toggle = self.form.deidentify_filenames_toggle
+
+    def _field_label(self, text: str) -> QLabel:
+        return self.form._field_label(text)
+
+    def _section_title(self, text: str) -> QLabel:
+        return self.form._section_title(text)
+
+    def clear_error(self) -> None:
+        self.error_label.clear()
+        self.error_label.hide()
+
+    def current_settings(self) -> AnonymizationSettings:
+        return self.form.current_settings()
 
     def settings(self) -> AnonymizationSettings:
         return self._accepted_settings or self.current_settings()

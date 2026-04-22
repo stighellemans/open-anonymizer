@@ -4,6 +4,7 @@ import re
 
 
 TOKEN_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
+APOSTROPHE_SEPARATOR_PATTERN = re.compile(r"\s*['’`]\s*")
 NAME_TEXT_SEPARATOR_PATTERN = r"(?:[\s,.'’`-]+)"
 ADDRESS_TEXT_SEPARATOR_PATTERN = r"(?:[\W_]+)"
 FILENAME_SEPARATOR_PATTERN = r"[\s,._/-]+"
@@ -56,9 +57,21 @@ def parse_person_components(value: str) -> tuple[str, str]:
     if not stripped:
         return "", ""
 
-    given_tokens, family_tokens = _person_name_parts(stripped)
-    if given_tokens and family_tokens:
-        return " ".join(given_tokens), " ".join(family_tokens)
+    if "," in stripped:
+        family_part, given_part = stripped.split(",", 1)
+        family_part = family_part.strip()
+        given_part = given_part.strip()
+        if family_part and given_part:
+            return given_part, family_part
+
+    token_matches = _token_matches(stripped)
+    surname_start = _person_surname_start(stripped, token_matches)
+    if surname_start is not None:
+        family_start = token_matches[surname_start].start()
+        given_part = stripped[:family_start].strip()
+        family_part = stripped[family_start:].strip()
+        if given_part and family_part:
+            return given_part, family_part
 
     return stripped, ""
 
@@ -165,13 +178,14 @@ def _person_name_parts(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if family_tokens and given_tokens:
             return given_tokens, family_tokens
 
-    tokens = tuple(_tokens(value))
-    if len(tokens) < 2:
+    token_matches = _token_matches(value)
+    if len(token_matches) < 2:
         return (), ()
 
-    surname_start = len(tokens) - 1
-    while surname_start > 1 and tokens[surname_start - 1].casefold() in SURNAME_PARTICLES:
-        surname_start -= 1
+    tokens = tuple(match.group(0) for match in token_matches)
+    surname_start = _person_surname_start(value, token_matches)
+    if surname_start is None:
+        return (), ()
 
     given_tokens = tokens[:surname_start]
     family_tokens = tokens[surname_start:]
@@ -303,8 +317,40 @@ def _tokens(value: str) -> list[str]:
     return TOKEN_PATTERN.findall(value)
 
 
+def _token_matches(value: str) -> tuple[re.Match[str], ...]:
+    return tuple(TOKEN_PATTERN.finditer(value))
+
+
+def _person_surname_start(
+    value: str,
+    token_matches: tuple[re.Match[str], ...],
+) -> int | None:
+    if len(token_matches) < 2:
+        return None
+
+    tokens = tuple(match.group(0) for match in token_matches)
+    surname_start = len(tokens) - 1
+    while surname_start > 1:
+        separator = value[
+            token_matches[surname_start - 1].end() : token_matches[surname_start].start()
+        ]
+        if (
+            tokens[surname_start - 1].casefold() in SURNAME_PARTICLES
+            or _is_apostrophe_separator(separator)
+        ):
+            surname_start -= 1
+            continue
+        break
+
+    return surname_start
+
+
 def _normalize_spacing(value: str) -> str:
     return " ".join(value.split())
+
+
+def _is_apostrophe_separator(value: str) -> bool:
+    return bool(APOSTROPHE_SEPARATOR_PATTERN.fullmatch(value))
 
 
 def _has_letters(token: str) -> bool:

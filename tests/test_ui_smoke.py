@@ -6,7 +6,7 @@ from zipfile import ZipFile
 
 from PySide6.QtCore import QMimeData, QPointF, QSize, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QTextDocumentFragment
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QToolButton
+from PySide6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QPushButton, QToolButton
 
 from open_anonymizer.main import APP_STYLESHEET
 from open_anonymizer.models import (
@@ -111,6 +111,35 @@ def test_main_window_shows_application_branding_icon(qtbot) -> None:
     assert header_icon is not None
     assert window.windowIcon().isNull() is False
     assert header_icon.pixmap().isNull() is False
+
+
+def test_main_window_can_start_on_setup_screen_and_continue(qtbot) -> None:
+    window = MainWindow(show_startup_setup=True)
+    qtbot.addWidget(window)
+
+    assert window.page_stack.currentWidget() is window.startup_setup_page
+    assert window.startup_continue_button.text() == "Continue"
+    assert (
+        window.findChild(QLabel, "startupSetupTitle").text()
+        == "Some initials questions"
+    )
+
+    window.startup_setup_form.first_name_input.setText("Ada")
+    window.startup_setup_form.birthdate_input.setText("10/12/1815")
+    window.startup_continue_button.click()
+
+    assert window.page_stack.currentWidget() is window.workspace_page
+    assert window.anonymization_settings.first_name == "Ada"
+    assert window.anonymization_settings.birthdate == date(1815, 12, 10)
+
+
+def test_main_window_setup_screen_hides_extra_intro_blocks(qtbot) -> None:
+    window = MainWindow(show_startup_setup=True)
+    qtbot.addWidget(window)
+
+    assert window.findChild(QLabel, "startupSetupEyebrow") is None
+    assert window.findChild(QLabel, "startupSetupBody") is None
+    assert window.findChild(QFrame, "startupSetupStatusCard") is None
 
 
 def test_main_window_uses_white_header_icon_variant(qtbot) -> None:
@@ -1190,7 +1219,11 @@ def test_main_window_removes_document_from_inline_item_button(qtbot) -> None:
         pos=remove_button_rect.center().toPoint(),
     )
 
-    assert all(button.text() != "Remove" for button in window.findChildren(QPushButton))
+    assert all(
+        button.text() != "Remove"
+        for button in window.findChildren(QPushButton)
+        if button.isVisible()
+    )
     assert [document.id for document in window.documents] == [first_document.id]
     assert window.document_list.count() == 1
     assert window.document_list.item(0).data(DOCUMENT_ID_ROLE) == first_document.id

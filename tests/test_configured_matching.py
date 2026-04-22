@@ -4,6 +4,7 @@ from open_anonymizer.services.configured_matching import (
     address_filename_patterns,
     address_metadata_variants,
     address_text_patterns,
+    parse_person_components,
     person_filename_patterns,
     person_metadata_variants,
     person_text_patterns,
@@ -28,6 +29,17 @@ def test_person_filename_patterns_match_reordered_names() -> None:
 
     assert _matches(patterns, "Stig_Hellemans_report.pdf")
     assert _matches(patterns, "Hellemans-Stig-report.pdf")
+
+
+def test_person_components_keep_apostrophe_surname_prefixes_together() -> None:
+    assert parse_person_components("Veerle D'heygere") == ("Veerle", "D'heygere")
+
+
+def test_person_metadata_variants_keep_apostrophe_surname_prefixes_with_family_name() -> None:
+    variants = person_metadata_variants("Veerle D'heygere")
+
+    assert "D heygere, Veerle" in variants
+    assert "heygere, Veerle D" not in variants
 
 
 def test_address_patterns_match_common_layout_variants() -> None:

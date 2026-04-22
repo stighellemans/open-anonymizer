@@ -30,6 +30,9 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
             return 17
 
     class FakeWindow:
+        def __init__(self, *, show_startup_setup=False) -> None:
+            events.append(f"setup:{show_startup_setup}")
+
         def show(self) -> None:
             events.append("show")
 
@@ -47,6 +50,7 @@ def test_main_releases_backend_resources_on_shutdown(monkeypatch) -> None:
     result = main_module.main()
 
     assert result == 17
+    assert "setup:True" in events
     assert events.index("show") < events.index("exec")
     assert scheduled == [main_module.STARTUP_BACKEND_WARMUP_DELAY_MS]
     assert events[-1] == "cleanup"

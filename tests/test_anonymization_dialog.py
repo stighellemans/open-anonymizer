@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, Qt
 
-from datetime import date
+from datetime import date, timedelta
 
 from open_anonymizer.models import AnonymizationSettings, RecognitionFlags
 from open_anonymizer.services.smart_pseudonymizer import effective_date_shift_days
@@ -80,23 +80,63 @@ def test_dialog_uses_plain_language_for_people_and_addresses(qtbot) -> None:
 
     label_texts = {label.text() for label in dialog.findChildren(type(dialog._field_label("")))}
 
-    assert "General recognition" in {
+    assert "Which categories do you want the system to detect and anonymize?" in {
         label.text() for label in dialog.findChildren(type(dialog._section_title("")))
     }
-    assert "Hide specific information" in {
+    assert "Patient" in {
         label.text() for label in dialog.findChildren(type(dialog._section_title("")))
     }
-    assert "First name patient" in label_texts
-    assert "Last name patient" in label_texts
-    assert "Birthdate patient" in label_texts
-    assert "Date shift (days)" in label_texts
+    assert "Other information you want to anonymize" in {
+        label.text() for label in dialog.findChildren(type(dialog._section_title("")))
+    }
+    assert "Other options" in {
+        label.text() for label in dialog.findChildren(type(dialog._section_title("")))
+    }
+    assert (
+        "What is your first name and last name you want the anonymizer to recognize?"
+        in label_texts
+    )
+    assert "What is your birthdate?" in label_texts
+    assert "Shift detected dates (days)" in label_texts
     assert "Other people" in label_texts
+    assert "Addresses" in label_texts
+    assert dialog.first_name_input.placeholderText() == "First name"
+    assert dialog.last_name_input.placeholderText() == "Last name"
     assert dialog.other_person_rows[0].first_name_input.placeholderText() == "First name"
     assert dialog.other_person_rows[0].last_name_input.placeholderText() == "Last name"
     assert dialog.address_rows[0].street_input.placeholderText() == "Street"
     assert dialog.address_rows[0].number_input.placeholderText() == "Number"
     assert dialog.add_other_person_button.text() == "Add other person"
     assert dialog.add_address_button.text() == "Add address"
+    example_texts = {
+        label.text()
+        for label in dialog.findChildren(type(dialog._field_label("")))
+        if label.objectName() in {"smartPlaceholderExampleHeader", "smartPlaceholderExampleValue"}
+    }
+    assert "Original" in example_texts
+    assert "Default placeholder" in example_texts
+    assert "Smart placeholder" in example_texts
+    assert "Marie Dupont" in example_texts
+    assert "[PATIENT]" in example_texts
+    assert "Sophie Martin" in example_texts
+    assert "12/03/1980" in example_texts
+    assert "[DATE-1]" in example_texts
+    shifted_date_label = dialog.findChild(type(dialog._field_label("")), "smartPlaceholderExampleShiftedDate")
+    assert shifted_date_label is not None
+    assert "(" in shifted_date_label.text()
+    assert ")" in shifted_date_label.text()
+    filename_example_texts = {
+        label.text()
+        for label in dialog.findChildren(type(dialog._field_label("")))
+        if label.objectName() in {"filenameExampleHeader", "filenameExampleValue"}
+    }
+    assert "Original" in filename_example_texts
+    assert "Default placeholder" in filename_example_texts
+    assert "Smart placeholder" in filename_example_texts
+    assert "Jean_Dupont_report.txt" in filename_example_texts
+    assert "8f3a91c2de_deid.txt" in filename_example_texts
+    assert "12-03-1980_lab_results.pdf" in filename_example_texts
+    assert "4b72c1a8f0_deid.pdf" in filename_example_texts
 
 
 def test_dialog_exposes_info_hints_for_key_titles(qtbot) -> None:
@@ -211,6 +251,9 @@ def test_dialog_exposes_smart_placeholder_toggle(qtbot) -> None:
     assert dialog.smart_date_shift_row.isHidden() is False
     assert dialog.date_shift_days_slider.days() == 21
     assert dialog.date_shift_days_slider.findChild(type(dialog._field_label("")), "dateShiftBubble").text() == "+21"
+    shifted_date_label = dialog.findChild(type(dialog._field_label("")), "smartPlaceholderExampleShiftedDate")
+    assert shifted_date_label is not None
+    assert shifted_date_label.text() == "02/04/1980 (+21 days)"
 
     dialog.smart_mode_toggle.setChecked(False)
 
@@ -282,6 +325,10 @@ def test_dialog_marks_date_shift_as_manual_after_slider_change(qtbot, monkeypatc
 
     assert dialog.current_settings().date_shift_days == 84
     assert "Custom date shift override" in dialog.date_shift_days_slider.toolTip()
+    shifted_date_label = dialog.findChild(type(dialog._field_label("")), "smartPlaceholderExampleShiftedDate")
+    assert shifted_date_label is not None
+    expected_date = (date(1980, 3, 12) + timedelta(days=84)).strftime("%d/%m/%Y")
+    assert shifted_date_label.text() == f"{expected_date} (+84 days)"
 
 
 def test_date_shift_slider_skips_directly_over_unsafe_center_gap() -> None:

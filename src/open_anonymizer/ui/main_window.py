@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QStyledItemDelegate,
     QStyle,
     QToolButton,
@@ -46,6 +47,7 @@ from open_anonymizer.models import (
     ProcessedDocument,
 )
 from open_anonymizer.services.backend_runtime import backend_is_ready
+from open_anonymizer.services.deidentifier import ProcessingError
 from open_anonymizer.services.exporter import export_processed_documents
 from open_anonymizer.services.workers import (
     BatchProcessingFailure,
@@ -61,6 +63,7 @@ from open_anonymizer.services.workers import (
 )
 from open_anonymizer.ui.anonymization_dialog import (
     AnonymizationDialog,
+    AnonymizationSettingsForm,
     load_saved_anonymization_settings,
     save_anonymization_settings,
 )
@@ -106,6 +109,9 @@ SCANNING_BADGE_TEXT = "Scanning"
 DEFAULT_MAX_CONCURRENT_IMPORTS = 1
 FILE_IMPORT_BLOCKED_MESSAGE = (
     "File import is unavailable while the anonymizer engine is preparing."
+)
+SETUP_CONTINUE_REQUIRED_MESSAGE = (
+    "Continue to the workspace before importing files."
 )
 DROP_AREA_PREPARING_MESSAGE = (
     "Anonymizer engine is preparing. File import will re-enable shortly; text can still be pasted here."
@@ -699,7 +705,7 @@ class AppInfoDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, show_startup_setup: bool = False):
         super().__init__()
         self.documents: list[ImportedDocument] = []
         self.processed_documents = {}
@@ -730,6 +736,7 @@ class MainWindow(QMainWindow):
         self.app_info_dialog: AppInfoDialog | None = None
         self._closing = False
         self._drop_state_reset_pending = False
+        self._show_startup_setup = show_startup_setup
         self.paste_processing_timer = QTimer(self)
         self.paste_processing_timer.setSingleShot(True)
         self.paste_processing_timer.setInterval(250)
@@ -759,6 +766,8 @@ class MainWindow(QMainWindow):
         self._install_window_drop_targets()
         self.refresh_document_list()
         self.refresh_actions()
+        if self._show_startup_setup:
+            QTimer.singleShot(0, self.startup_setup_form.first_name_input.setFocus)
 
     def _install_window_drop_targets(self) -> None:
         for widget in self.findChildren(QWidget):
@@ -848,6 +857,72 @@ class MainWindow(QMainWindow):
         super().dropEvent(event)
 
     def _build_ui(self) -> None:
+        self.page_stack = QStackedWidget()
+        self.startup_setup_page = self._build_startup_setup_page()
+        self.workspace_page = self._build_workspace_page()
+        self.page_stack.addWidget(self.startup_setup_page)
+        self.page_stack.addWidget(self.workspace_page)
+        self.page_stack.setCurrentWidget(
+            self.startup_setup_page if self._show_startup_setup else self.workspace_page
+        )
+        self.setCentralWidget(self.page_stack)
+        self._build_status_bar()
+        self._refresh_setup_status()
+
+    def _build_startup_setup_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("startupSetupPage")
+
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("Some initials questions")
+        title.setObjectName("startupSetupTitle")
+        title.setWordWrap(True)
+
+        setup_card = QFrame()
+        setup_card.setObjectName("startupSetupCard")
+        setup_layout = QVBoxLayout(setup_card)
+        setup_layout.setContentsMargins(18, 18, 18, 16)
+        setup_layout.setSpacing(12)
+
+        self.startup_setup_form = AnonymizationSettingsForm(
+            self.anonymization_settings,
+            parent=setup_card,
+        )
+        setup_layout.addWidget(self.startup_setup_form, 1)
+
+        self.startup_setup_error_label = QLabel("")
+        self.startup_setup_error_label.setObjectName("startupSetupError")
+        self.startup_setup_error_label.setWordWrap(True)
+        self.startup_setup_error_label.hide()
+        setup_layout.addWidget(self.startup_setup_error_label)
+        self.startup_setup_form.birthdate_input.textChanged.connect(
+            self.clear_startup_setup_error
+        )
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(12)
+
+        self.startup_continue_button = QPushButton("Continue")
+        self.startup_continue_button.setObjectName("primaryButton")
+        self.startup_continue_button.clicked.connect(self.continue_from_startup_setup)
+
+        action_row.addStretch(1)
+        action_row.addWidget(
+            self.startup_continue_button,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        layout.addWidget(title)
+        layout.addWidget(setup_card, 1)
+        layout.addLayout(action_row)
+        return page
+
+    def _build_workspace_page(self) -> QWidget:
         layout_profile = self._layout_profile
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1054,8 +1129,31 @@ class MainWindow(QMainWindow):
         splitter.setSizes([min(400, int(initial_size.width() * 0.38)), max(480, int(initial_size.width() * 0.62))])
 
         root_layout.addWidget(splitter, stretch=1)
-        self.setCentralWidget(root)
-        self._build_status_bar()
+        return root
+
+    def _refresh_setup_status(self) -> None:
+        return
+
+    def clear_startup_setup_error(self) -> None:
+        self.startup_setup_error_label.clear()
+        self.startup_setup_error_label.hide()
+
+    def continue_from_startup_setup(self) -> None:
+        try:
+            settings = self.startup_setup_form.current_settings()
+        except ProcessingError as exc:
+            self.startup_setup_error_label.setText(str(exc))
+            self.startup_setup_error_label.show()
+            return
+
+        self.apply_anonymization_settings(
+            settings,
+            persist=True,
+            reprocess=False,
+        )
+        self.page_stack.setCurrentWidget(self.workspace_page)
+        self.clear_startup_setup_error()
+        self.paste_input.setFocus(Qt.FocusReason.TabFocusReason)
 
     def _build_status_bar(self) -> None:
         status_bar = self.statusBar()
@@ -1735,11 +1833,22 @@ class MainWindow(QMainWindow):
         self.document_status_label.setText(text)
         self.document_status_label.setToolTip(tooltip)
 
+    def _startup_setup_is_active(self) -> bool:
+        return (
+            hasattr(self, "page_stack")
+            and self.page_stack.currentWidget() is self.startup_setup_page
+        )
+
     def _is_file_import_blocked(self) -> bool:
-        return self._is_backend_preparation_pending()
+        return self._startup_setup_is_active() or self._is_backend_preparation_pending()
 
     def _notify_file_import_blocked(self) -> None:
-        self.statusBar().showMessage(FILE_IMPORT_BLOCKED_MESSAGE, 3000)
+        message = (
+            SETUP_CONTINUE_REQUIRED_MESSAGE
+            if self._startup_setup_is_active()
+            else FILE_IMPORT_BLOCKED_MESSAGE
+        )
+        self.statusBar().showMessage(message, 3000)
 
     def _refresh_file_import_state(self) -> None:
         blocked = self._is_file_import_blocked()
@@ -1765,6 +1874,7 @@ class MainWindow(QMainWindow):
         return f"{label}: {'; '.join(warnings)}"
 
     def update_output_panel(self) -> None:
+        self._refresh_setup_status()
         pasted_text = self.current_pasted_text()
         if pasted_text:
             self._update_pasted_text_output(pasted_text)
