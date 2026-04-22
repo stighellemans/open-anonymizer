@@ -1094,9 +1094,8 @@ class AnonymizationSettingsForm(QWidget):
         layout.setVerticalSpacing(6)
 
         headers = (
-            "Original",
-            "Default placeholder",
-            "Smart placeholder",
+            "Original filename",
+            "De-identified filename",
         )
         for column, header in enumerate(headers):
             label = QLabel(header)
@@ -1107,11 +1106,9 @@ class AnonymizationSettingsForm(QWidget):
             (
                 "Jean_Dupont_report.txt",
                 "8f3a91c2de_deid.txt",
-                "8f3a91c2de_deid.txt",
             ),
             (
                 "12-03-1980_lab_results.pdf",
-                "4b72c1a8f0_deid.pdf",
                 "4b72c1a8f0_deid.pdf",
             ),
         )

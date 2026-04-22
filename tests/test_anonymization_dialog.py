@@ -130,9 +130,8 @@ def test_dialog_uses_plain_language_for_people_and_addresses(qtbot) -> None:
         for label in dialog.findChildren(type(dialog._field_label("")))
         if label.objectName() in {"filenameExampleHeader", "filenameExampleValue"}
     }
-    assert "Original" in filename_example_texts
-    assert "Default placeholder" in filename_example_texts
-    assert "Smart placeholder" in filename_example_texts
+    assert "Original filename" in filename_example_texts
+    assert "De-identified filename" in filename_example_texts
     assert "Jean_Dupont_report.txt" in filename_example_texts
     assert "8f3a91c2de_deid.txt" in filename_example_texts
     assert "12-03-1980_lab_results.pdf" in filename_example_texts
